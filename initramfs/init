@@ -1,0 +1,92 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Early boot for OnePlus Pad 3 (erhai): sets up, unlocks and starts the
+# installed system (erhai.root).
+# Safety: reboots after erhai.timeout seconds (default 1800) or when any
+# thermal zone exceeds erhai.maxtemp millidegrees (default 70000).
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+mkdir -p /dev/pts /run /tmp /sys/kernel/config
+mount -t devpts devpts /dev/pts
+mount -t tmpfs tmpfs /run
+mount -t configfs configfs /sys/kernel/config
+mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null
+exec </dev/console >/dev/console 2>&1
+# <6> = KERN_INFO: kept in dmesg, not printed over the interactive console.
+log() { echo "<6>erhai-init: $*" > /dev/kmsg; }
+
+timeout=1800 maxtemp=70000
+for arg in $(cat /proc/cmdline); do
+	case "$arg" in
+	erhai.timeout=*) timeout=${arg#*=} ;;
+	erhai.maxtemp=*) maxtemp=${arg#*=} ;;
+	erhai.root=*) root_part=${arg#*=} ;;
+	quiet) quiet=1 ;;
+	esac
+done
+# Normal boots of the installed system (quiet) keep the panel clean for the
+# splash; failures are still written to tty1.
+con=/dev/tty1
+[ -n "$root_part" ] && [ -n "$quiet" ] && con=/dev/null
+log "storage read-only except ${root_part:-nothing}, timeout=${timeout}s maxtemp=${maxtemp}"
+# Storage guard: every UFS LUN and partition read-only as soon as it appears,
+# except the installed root partition (erhai.root) and the disk holding it.
+( for i in $(seq 1 120); do storage-ro "$root_part"; sleep 1; done ) &
+
+# Thermal guard: log the hottest zone every 10 s, reboot if too hot or session expired.
+(
+	start=$(cut -d. -f1 /proc/uptime)
+	while :; do
+		hot=0 hotname=
+		for z in /sys/class/thermal/thermal_zone*; do
+			t=$(cat "$z/temp" 2>/dev/null) || continue
+			[ "$t" -gt "$hot" ] 2>/dev/null && hot=$t hotname=$(cat "$z/type")
+		done
+		log "thermal max ${hot} (${hotname})"
+		if [ "$maxtemp" -gt 0 ] && [ "$hot" -gt "$maxtemp" ]; then log "TOO HOT, rebooting"; sync; reboot -f; fi
+		now=$(cut -d. -f1 /proc/uptime)
+		if [ "$timeout" -gt 0 ] && [ $((now - start)) -gt "$timeout" ]; then log "session timeout, rebooting"; reboot -f; fi
+		sleep 10
+	done
+) &
+
+# Previous kernel's log, if a panic/reboot left it in the ramoops region.
+mkdir -p /sys/fs/pstore
+mount -t pstore pstore /sys/fs/pstore 2>/dev/null
+if ls /sys/fs/pstore/* >/dev/null 2>&1; then
+	mkdir -p /run/pstore && cp /sys/fs/pstore/* /run/pstore/
+	{ echo "== previous boot (pstore): $(ls /run/pstore | tr '\n' ' ')"
+	  tail -n 25 /run/pstore/dmesg-ramoops-0 2>/dev/null || tail -n 25 /run/pstore/console-ramoops-0; } > $con
+fi
+
+# Installed system: erhai.root=PARTNAME, the partition with its volumes
+# (initramfs/storage). Every other partition stays read-only.
+if [ -n "$root_part" ]; then
+	echo "starting the installed system ..." > $con
+	dev=
+	for i in $(seq 1 30); do
+		for u in /sys/class/block/sd*/uevent; do
+			grep -qx "PARTNAME=$root_part" "$u" 2>/dev/null && dev=$(sed -n 's/^DEVNAME=//p' "$u")
+		done
+		[ -n "$dev" ] && break; sleep 1
+	done
+	storage-ro "$root_part"
+	# The system and the owner's files: set up on the first boot, unlocked
+	# (password on the panel) and mounted on /newroot by initramfs/storage.
+	mkdir -p /newroot
+	if [ -n "$dev" ] && storage "/dev/$dev" && [ -x /newroot/sbin/init ]; then
+		log "root: /dev/$dev ($root_part), switching root"
+		kill -9 -1 2>/dev/null
+		for m in dev proc sys; do mount --move /$m /newroot/$m; done
+		exec switch_root /newroot /sbin/init
+	fi
+	log "root: ${dev:-$root_part not found} could not be mounted"
+	echo "installed system failed to start" > /dev/tty1
+fi
+echo "The system could not be started. Restarting into fastboot in two minutes." > /dev/tty1
+sleep 120
+sync
+reboot-bootloader
+reboot -f

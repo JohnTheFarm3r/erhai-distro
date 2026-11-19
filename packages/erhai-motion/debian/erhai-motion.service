@@ -1,0 +1,14 @@
+[Unit]
+Description=Motion sensor input device
+# The sensor daemon starts after multi-user.target and again after every
+# resume; the motion device follows it.
+BindsTo=hexagonrpcd.service
+After=hexagonrpcd.service
+
+[Service]
+ExecStart=/usr/libexec/erhai-motion
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=hexagonrpcd.service

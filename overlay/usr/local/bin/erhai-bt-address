@@ -1,0 +1,52 @@
+#!/usr/bin/python3
+# The Bluetooth controller has no address of its own: the bootloader does
+# not provide one and the firmware carries only a placeholder, so the kernel
+# keeps it unconfigured. Give it a fixed address made from the tablet's
+# serial number (locally administered, unicast), the same on every boot,
+# through the kernel's Bluetooth management interface.
+import hashlib, os, re, socket, struct, sys, time
+
+READ_UNCONF_INDEX_LIST = 0x0036
+READ_CONFIG_INFO = 0x0037
+SET_PUBLIC_ADDRESS = 0x0039
+OPTION_PUBLIC_ADDRESS = 0x2
+
+def command(sock, op, index, data=b''):
+    sock.send(struct.pack('<HHH', op, index, len(data)) + data)
+    while True:
+        p = sock.recv(1024)
+        event, _, _ = struct.unpack('<HHH', p[:6])
+        if event in (1, 2):  # command complete, command status
+            reply_op, status = struct.unpack('<HB', p[6:9])
+            if reply_op == op:
+                return status, p[9:]
+
+def address():
+    m = re.search(r'oplusboot\.serialno=(\S+)', open('/proc/cmdline').read())
+    ident = m.group(1) if m else open('/etc/machine-id').read().strip()
+    h = bytearray(hashlib.sha256(b'erhai-bluetooth-' + ident.encode()).digest()[:6])
+    h[0] = (h[0] & 0xfc) | 0x02
+    return bytes(h)
+
+for _ in range(30):
+    if os.path.exists('/sys/class/bluetooth/hci0'):
+        break
+    time.sleep(1)
+
+sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_RAW, socket.BTPROTO_HCI)
+sock.bind((0xffff, 3))  # no device, control channel
+sock.settimeout(5)
+
+status, data = command(sock, READ_UNCONF_INDEX_LIST, 0xffff)
+count = struct.unpack('<H', data[:2])[0] if status == 0 else 0
+for index in struct.unpack('<%dH' % count, data[2:2 + 2 * count]):
+    status, info = command(sock, READ_CONFIG_INFO, index)
+    if status or not struct.unpack('<I', info[6:10])[0] & OPTION_PUBLIC_ADDRESS:
+        continue
+    a = address()
+    # The management interface takes the address least significant byte first.
+    status, _ = command(sock, SET_PUBLIC_ADDRESS, index, a[::-1])
+    print('hci%d: %s %s' % (index, ':'.join('%02X' % b for b in a),
+                            'set' if status == 0 else 'failed (%d)' % status))
+    if status:
+        sys.exit(1)

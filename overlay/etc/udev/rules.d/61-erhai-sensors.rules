@@ -1,0 +1,4 @@
+# Sensors on the ADSP sensor core (libssc). The accelerometer is there too, so
+# screen rotation works; this is the placement of the BMI3x0 relative to the
+# panel, whose native orientation is landscape.
+SUBSYSTEM=="misc", KERNEL=="fastrpc-adsp-secure", ENV{IIO_SENSOR_PROXY_TYPE}+="ssc-accel", ENV{ACCEL_MOUNT_MATRIX}="0, 1, 0; -1, 0, 0; 0, 0, 1"

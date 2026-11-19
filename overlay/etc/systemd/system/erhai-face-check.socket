@@ -1,0 +1,13 @@
+[Unit]
+Description=Face unlock check
+
+[Socket]
+# Root only: the PAM face helper asks here, also from sandboxed prompts
+# that have no access to the camera themselves.
+ListenStream=/run/erhai-face.sock
+SocketMode=0600
+Accept=yes
+MaxConnections=4
+
+[Install]
+WantedBy=sockets.target

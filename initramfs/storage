@@ -1,0 +1,294 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# storage DEV
+# Opens the storage of the installed system on the userdata partition DEV and
+# mounts it: the system on /newroot, the owner's files on /newroot/data (with
+# the home directories, /data/home, on /home).
+#
+# DEV holds the LVM volume group "erhai" with two volumes:
+#   root  the system, 64 GiB; a system update replaces only this volume
+#   data  everything else on the partition: the owner's files, and the
+#         apps from the App Center and Flatpak
+# An installed image carries only root: small, unencrypted and unchanged
+# since the build. On the first boot the owner chooses on the panel whether
+# a password encrypts everything, only the files, or nothing (erhai-ui).
+# This script then encrypts root in place, grows it, and creates data, with
+# the progress on the panel. The choice is kept as a tag of the volume
+# group; data is tagged erhai-ready when it is complete, so an interrupted
+# setup continues on the next boot.
+#
+# Encrypted volumes are LUKS2 with AES-256-XTS on 512-byte sectors, the
+# format of the UFS inline crypto engine. Their disk keys go to the engine
+# through dm-inlinecrypt; if that fails, dm-crypt decrypts on the CPU. Both
+# use the same on-disk format, so `cryptsetup open` reads them anywhere.
+#
+# A system update staged in /data/system/update (root.img, an ext4 image,
+# and the file "ready") is written over root, keeping the owner's accounts
+# and settings (/etc/erhai-keep).
+# Exit status: 0 mounted, 1 failed.
+# busybox runs its own mke2fs and blkdiscard whatever PATH says, so the full
+# tools are called by their paths.
+PATH=/usr/sbin:/usr/bin:/bin:/sbin
+mke2fs=/usr/sbin/mke2fs blkdiscard=/usr/sbin/blkdiscard
+# There are no device-mapper udev rules here: the tools create the device
+# nodes themselves.
+export DM_DISABLE_UDEV=1 LVM_SUPPRESS_FD_WARNINGS=1
+dev=$1
+vg=erhai
+root_size=64G
+U=/run/erhai-ui
+umask 077
+log() { echo "<6>erhai-storage: $*" > /dev/kmsg; }
+lv() { c=$1; shift; lvm "$c" --devices "$dev" "$@"; }
+
+# ---- the screens on the panel ----
+ui_pid=
+ui() {
+	if [ -z "$ui_pid" ]; then
+		mkdir -p $U && mkfifo $U/in $U/out && { erhai-ui & ui_pid=$!; }
+	fi
+	echo "$*" > $U/in
+}
+ui_reply() { read -r reply < $U/out; }
+ui_end() {
+	[ -n "$ui_pid" ] || return 0
+	echo done > $U/in; wait "$ui_pid"; ui_pid=
+	rm -rf $U
+}
+fail() {
+	log "$1"
+	if [ -n "$ui_pid" ]; then
+		ui message "$1"
+		ui_reply
+		ui_end
+		sync; reboot -f
+	fi
+	exit 1
+}
+
+# ---- encrypted volumes ----
+luks() { cryptsetup isLuks "$1" 2>/dev/null; }
+reenc() { cryptsetup luksDump "$1" 2>/dev/null | grep -q online-reencrypt; }
+# A cryptsetup command whose progress goes to the panel.
+cs_progress() {
+	{ cryptsetup "$@" --progress-json --progress-frequency 1 2>&1; echo "rc $?"; } |
+	while read -r l; do
+		case $l in
+		rc\ *) echo "${l#rc }" > /run/cs.rc ;;
+		\{*) b=$(echo "$l" | sed -n 's/.*"device_bytes":"\([0-9]*\)".*/\1/p')
+		     s=$(echo "$l" | sed -n 's/.*"device_size":"\([0-9]*\)".*/\1/p')
+		     [ -n "$b" ] && [ -n "$s" ] && echo "bytes $b $s" > $U/in ;;
+		*) log "cryptsetup: $l" ;;
+		esac
+	done
+	return "$(cat /run/cs.rc 2>/dev/null || echo 1)"
+}
+pw_ok() { # VOLUME: the password in $U/pw opens it
+	if reenc "$1"; then cryptsetup repair --batch-mode --key-file $U/pw "$1" 2>/dev/null || return 1; fi
+	cryptsetup open --test-passphrase --key-file $U/pw "$1" 2>/dev/null
+}
+open_luks() { # VOLUME NAME: opens VOLUME as /dev/mapper/NAME with the password in $U/pw
+	k=/run/erhai-vk
+	cryptsetup luksDump --batch-mode --dump-volume-key --volume-key-file $k \
+		--key-file $U/pw "$1" >/dev/null 2>&1 || { rm -f $k; return 1; }
+	off=$(cryptsetup luksDump "$1" | sed -n '/^Data segments:/,/^[A-Z]/s/^[[:space:]]*offset: *\([0-9]*\) \[bytes\]/\1/p' | head -n 1)
+	off=$((off / 512))
+	len=$(($(blockdev --getsz "$1") - off))
+	key=$(od -An -tx1 -v $k | tr -d ' \n')
+	# The table goes through stdin, so the key never appears in a command line.
+	if echo "0 $len inlinecrypt aes-xts-plain64 $key 0 $1 $off 1 allow_discards" |
+	   dmsetup create "$2" 2>/dev/null; then
+		log "$2 unlocked, inline crypto engine"
+	elif cryptsetup open --volume-key-file $k --allow-discards "$1" "$2"; then
+		log "$2 unlocked, dm-crypt fallback"
+	else
+		unset key; rm -f $k; return 1
+	fi
+	unset key; rm -f $k
+}
+luks_format() { # VOLUME: a new LUKS2 volume with the password in $U/pw
+	cryptsetup luksFormat --batch-mode --type luks2 --cipher aes-xts-plain64 --key-size 512 \
+		--sector-size 512 --label "$vg-${1##*/}" --key-file $U/pw "$1"
+}
+
+# ---- the volume group ----
+mkdir -p /run/lvm /run/lock/lvm /etc/lvm
+lv vgchange -ay --sysinit $vg >/dev/null 2>&1 || fail "The storage has no system volumes (erhai)."
+lv vgscan --mknodes >/dev/null 2>&1
+root=/dev/$vg/root data=/dev/$vg/data
+[ -e $root ] || fail "The system volume is missing."
+choice=$(lv vgs --noheadings -o vg_tags $vg | tr ',' '\n' | sed -n 's/^ *erhai-enc-//p')
+ready=$(lv lvs --noheadings -o lv_tags $vg/data 2>/dev/null | grep -c erhai-ready)
+first=
+# An interrupted setup that had not encrypted anything yet starts over.
+if [ "$ready" = 0 ] && [ -n "$choice" ] && [ "$choice" != none ] && ! luks $root; then
+	lv vgchange --deltag "erhai-enc-$choice" $vg >/dev/null; choice=
+fi
+
+# ---- first boot: the owner's choice, then the volumes ----
+if [ -z "$choice" ]; then
+	ui setup; ui_reply
+	choice=${reply#setup }
+	case $choice in everything|files|none) ;; *) fail "No choice was made." ;; esac
+	lv vgchange --addtag "erhai-enc-$choice" $vg >/dev/null || fail "The choice could not be saved."
+	log "setup: encryption $choice"
+fi
+if [ "$ready" = 0 ]; then
+	first=1
+	# A setup that continues after a restart asks the password again.
+	if [ "$choice" != none ] && [ ! -s $U/pw ]; then
+		msg="Setup was interrupted. Enter the password you chose to finish it."
+		while :; do
+			ui askpass "$msg"; ui_reply
+			pw_ok $root && break
+			msg="Wrong password. Enter the password you chose to finish the setup."
+		done
+	fi
+	ui progress "Setting up the storage"
+	ui step "Making room on the storage"
+	lv pvresize "$dev" >/dev/null || fail "The storage could not be resized."
+	if [ "$choice" = everything ] && ! luks $root; then
+		# The header goes in front, the filesystem moves back by its size.
+		lv lvextend -L +32M $root >/dev/null || fail "The system volume could not be grown."
+		ui step "Encrypting the system"
+		cs_progress reencrypt --encrypt --batch-mode --type luks2 --cipher aes-xts-plain64 \
+			--key-size 512 --sector-size 512 --reduce-device-size 32M --label $vg-root \
+			--key-file $U/pw $root || fail "The system could not be encrypted."
+	elif luks $root && reenc $root; then
+		ui step "Encrypting the system"
+		cs_progress reencrypt --resume-only --batch-mode --key-file $U/pw $root ||
+			fail "The system could not be encrypted."
+	fi
+	cur=$(lv lvs --noheadings --units b --nosuffix -o lv_size $root | tr -d ' ')
+	want=$((64 * 1024 * 1024 * 1024))
+	[ "$cur" -ge "$want" ] || lv lvextend -L $root_size $root >/dev/null || fail "The system volume could not be grown."
+	ui step "Preparing the space for your files"
+	[ -e $data ] && { lv lvremove -y $vg/data >/dev/null || fail "The old files volume could not be removed."; }
+	lv lvcreate -y -Wy -l 100%FREE -n data $vg >/dev/null || fail "The files volume could not be created."
+	lv vgscan --mknodes >/dev/null 2>&1
+	# Nothing written to the partition before (by Android) stays readable.
+	$blkdiscard -f $data 2>/dev/null || :
+	fs=$data
+	if [ "$choice" != none ]; then
+		luks_format $data || fail "The files volume could not be encrypted."
+		open_luks $data data || fail "The files volume could not be opened."
+		fs=/dev/mapper/data
+	fi
+	$mke2fs -q -t ext4 -L $vg-data -E nodiscard $fs || fail "The files volume could not be formatted."
+	mkdir -p /run/data && mount -t ext4 $fs /run/data || fail "The files volume could not be mounted."
+	mkdir -p /run/data/home /run/data/system
+	chmod 755 /run/data /run/data/home; chmod 700 /run/data/system
+	umount /run/data
+	[ "$choice" != none ] && dmsetup remove data
+	lv lvchange --addtag erhai-ready $vg/data >/dev/null || fail "The setup could not be finished."
+	log "setup: done"
+fi
+
+# ---- unlock ----
+if luks $root || luks $data; then
+	if [ ! -s $U/pw ]; then
+		t=$root; luks $t || t=$data
+		msg=
+		while :; do
+			ui askpass "$msg"; ui_reply
+			pw_ok $t && break
+			msg="Wrong password. Try again."
+		done
+	fi
+	if luks $root; then open_luks $root root || fail "The system could not be opened."; root=/dev/mapper/root; fi
+	if luks $data; then open_luks $data data || fail "Your files could not be opened."; data=/dev/mapper/data; fi
+fi
+rm -f $U/pw
+
+# ---- a staged system update ----
+mkdir -p /run/data
+mount -t ext4 -o rw,noatime $data /run/data || fail "Your files could not be mounted."
+u=/run/data/system/update
+if [ -f $u/ready ] && [ -f $u/root.img ]; then
+	log "update: installing"
+	ui progress "Installing the system update"
+	# The saved settings stay until the update is complete, so an update
+	# cut short is done again from the start with them; the account files
+	# are kept apart, merged into the new system's own.
+	k=/run/data/system/keep a=/run/data/system/keep-accounts
+	if [ ! -f $k.saved ]; then
+		ui step "Saving your accounts and settings"
+		rm -rf $k $a; mkdir -p $k $a /run/old; chmod 755 $k
+		mount -t ext4 -o ro $root /run/old || fail "The current system could not be read."
+		keep=$(cd /run/old && cat /etc/erhai-keep /run/data/system/keep.local 2>/dev/null |
+			sed 's/#.*//' | while read -r p; do [ -n "$p" ] && ls -d $p 2>/dev/null; done)
+		if [ -n "$keep" ]; then
+			# Parent directories made on the way get the usual mode.
+			(cd /run/old && tar -cf - $keep) | (umask 022; tar -C $k -xf -) ||
+				fail "Your settings could not be saved."
+		fi
+		umount /run/old
+		for f in passwd shadow group gshadow; do
+			[ -f $k/etc/$f ] && mv $k/etc/$f $a/
+		done
+		sync; touch $k.saved; sync
+	fi
+	ui step "Writing the new system"
+	erhai-ui copy $u/root.img $root || fail "The new system could not be written."
+	ui step "Restoring your accounts and settings"
+	mount -t ext4 -o rw $root /newroot || fail "The new system could not be mounted."
+	resize2fs $root >/dev/null 2>&1
+	# Accounts: the new system's lists, plus the owner's accounts and group
+	# memberships from the old one.
+	for f in passwd shadow; do
+		[ -f $a/$f ] || continue
+		awk -F: 'NR == FNR { have[$1] = 1; print; next } !($1 in have)' \
+			/newroot/etc/$f $a/$f > /run/merged && cat /run/merged > /newroot/etc/$f
+	done
+	for f in group gshadow; do
+		[ -f $a/$f ] || continue
+		awk -F: -v OFS=: '
+			NR == FNR { old[$1] = $0; mem[$1] = $4; next }
+			{
+				seen[$1] = 1
+				if ($1 in mem && mem[$1] != "") {
+					n = split(mem[$1], m, ",")
+					for (i = 1; i <= n; i++)
+						if (("," $4 ",") !~ ("," m[i] ",")) $4 = ($4 == "" ? m[i] : $4 "," m[i])
+				}
+				print
+			}
+			END { for (g in old) if (!(g in seen)) print old[g] }' \
+			$a/$f /newroot/etc/$f > /run/merged && cat /run/merged > /newroot/etc/$f
+	done
+	# tar replaces files and links that the new system has as well. The
+	# saved entries are named one by one, so the new system's / keeps its
+	# own owner and mode.
+	keep=$(cd $k && ls -A)
+	if [ -n "$keep" ]; then
+		(cd $k && tar -cf - $keep) | tar -C /newroot -xf - || fail "Your settings could not be restored."
+	fi
+	umount /newroot
+	sync
+	rm -f $u/ready $u/root.img
+	rm -rf $k $a $k.saved
+	sync
+	log "update: done"
+fi
+ui_end
+
+# ---- mount ----
+mount -t ext4 -o rw,noatime $root /newroot || fail "The system could not be mounted."
+[ -n "$first" ] && resize2fs $root >/dev/null 2>&1
+mkdir -p /newroot/data /newroot/home
+mount --move /run/data /newroot/data
+mount --bind /newroot/data/home /newroot/home
+# Apps from the App Center (snap) and Flatpak live with the files, so they
+# do not fill the system volume and stay through system updates. The first
+# boot moves the ones of the image there.
+a=/newroot/data/system/apps
+for p in snap var/snap var/lib/snapd var/lib/flatpak; do
+	if [ ! -d $a/$p ]; then
+		mkdir -p $a/$p.new
+		[ -d /newroot/$p ] && cp -a /newroot/$p/. $a/$p.new/
+		mv $a/$p.new $a/$p
+	fi
+	mkdir -p /newroot/$p
+	mount --bind $a/$p /newroot/$p
+done
+exit 0

@@ -1,0 +1,3 @@
+# The rear flash LEDs double as a torch. Let desktop users switch them
+# in torch mode; flash strobe stays root only.
+SUBSYSTEM=="leds", KERNEL=="white:flash-[01]", RUN+="/bin/chgrp plugdev /sys%p/brightness", RUN+="/bin/chmod 0664 /sys%p/brightness"

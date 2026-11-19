@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Face Unlock
+Comment=Unlock with your face instead of your password
+Exec=erhai-face-setup
+Icon=camera-web
+Terminal=false
+Categories=GNOME;GTK;Settings;Security;
+Keywords=face;unlock;login;camera;password;
+StartupNotify=true

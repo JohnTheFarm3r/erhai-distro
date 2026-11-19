@@ -1,0 +1,42 @@
+#!/usr/bin/python3 -I
+# SPDX-License-Identifier: GPL-2.0-only
+"""Face check service, started per request on /run/erhai-face.sock (root
+only). Reads "<user> <service>" and answers "ok" when the camera sees an
+enrolled face of that user, "no" otherwise."""
+import os
+import pwd
+import sys
+import syslog
+
+TIMEOUT = 4.0
+
+
+def main():
+    line = sys.stdin.readline(256).split()
+    if len(line) != 2:
+        return 'no'
+    user, service = line
+    try:
+        if pwd.getpwnam(user).pw_uid < 1000:
+            return 'no'
+    except KeyError:
+        return 'no'
+    os.environ['LIBCAMERA_LOG_LEVELS'] = '*:FATAL'
+    sys.path.insert(0, '/usr/lib/erhai-face')
+    import erhai_face
+    if not erhai_face.enrolled(user):
+        return 'no'
+    syslog.openlog('erhai-face', 0, syslog.LOG_AUTH)
+    ok = erhai_face.verify(user, TIMEOUT, log=lambda m: syslog.syslog(
+        syslog.LOG_INFO, '%s for %s (%s)' % (m, user, service)))
+    return 'ok' if ok else 'no'
+
+
+if __name__ == '__main__':
+    try:
+        answer = main()
+    except Exception as e:  # noqa: B902, any failure means the password
+        syslog.syslog(syslog.LOG_WARNING, 'erhai-face: check failed: %r' % (e,))
+        answer = 'no'
+    sys.stdout.write(answer + '\n')
+    sys.stdout.flush()

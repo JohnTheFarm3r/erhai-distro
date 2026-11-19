@@ -1,0 +1,12 @@
+[Unit]
+Description=Copy the sensor calibration from this tablet's persist partition
+ConditionPathExists=!/var/lib/hexagonrpcd/sensors-registry
+After=local-fs.target
+Before=hexagonrpcd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/erhai-sensor-registry
+
+[Install]
+WantedBy=multi-user.target

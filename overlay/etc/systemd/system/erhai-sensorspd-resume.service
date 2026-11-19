@@ -1,0 +1,12 @@
+# hexagonrpcd stops for suspend (Conflicts=suspend.target);
+# start it again on resume. The sensors keep running on the DSP meanwhile.
+[Unit]
+Description=Restart the sensor core FastRPC server after resume
+After=suspend.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl start --no-block hexagonrpcd.service
+
+[Install]
+WantedBy=suspend.target

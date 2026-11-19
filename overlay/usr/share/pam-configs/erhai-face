@@ -1,0 +1,6 @@
+Name: Face unlock (front camera)
+Default: yes
+Priority: 300
+Auth-Type: Primary
+Auth:
+	[success=end default=ignore]	pam_exec.so quiet stdout type=auth /usr/libexec/erhai-face-auth

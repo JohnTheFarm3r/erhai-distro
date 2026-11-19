@@ -1,0 +1,3 @@
+usr/include
+usr/lib/*/libssc.so
+usr/lib/*/pkgconfig

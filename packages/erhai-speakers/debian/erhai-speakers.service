@@ -1,0 +1,11 @@
+[Unit]
+Description=Thermal speaker protection
+After=sound.target alsa-restore.service
+
+[Service]
+ExecStart=/usr/libexec/erhai-speakers
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

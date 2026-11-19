@@ -1,0 +1,11 @@
+[Unit]
+Description=Power key: short press locks the screen, holding it asks to power off
+Before=display-manager.service
+
+[Service]
+ExecStart=/usr/local/sbin/erhai-powerkey
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

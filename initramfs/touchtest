@@ -1,0 +1,11 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Count input events from each touch/pen device for 8 s: touch the screen meanwhile.
+for d in /sys/class/input/event*; do
+	n=$(cat $d/device/name)
+	case "$n" in *[Tt]ouch*|*[Pp]en*|*nt36536*|*NVT*|*nvt*) ;; *) continue ;; esac
+	e=/dev/input/${d##*/}
+	echo "watching $e ($n) - touch the screen now"
+	c=$(timeout 8 cat $e | wc -c)
+	echo "$n: $((c / 24)) events"
+done

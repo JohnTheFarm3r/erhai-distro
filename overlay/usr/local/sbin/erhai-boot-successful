@@ -1,0 +1,45 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Tell the bootloader that this boot worked, as Android's boot control service
+# does. Until the boot partition entry of the running slot is marked
+# successful, the bootloader takes one retry per boot and marks the slot
+# unbootable after 7.
+#
+# Writes only when needed (once after the slot was activated): qbootctl, built
+# with packages/qbootctl/boot-only.patch, sets the successful flag on the
+# boot partition entry of the slot and updates the primary and backup GPT of
+# that one LUN. The LUN is writable only for that write; every other LUN stays
+# read-only.
+set -eu
+log() { echo "erhai-boot-successful: $*"; }
+
+case "$(qbootctl -c 2>/dev/null)" in
+*"Current slot: _a"*) s=a ;;
+*"Current slot: _b"*) s=b ;;
+*) log "could not read the current slot"; exit 1 ;;
+esac
+case "$(qbootctl -n $s 2>/dev/null)" in
+*"is marked successful"*) exit 0 ;;
+*"is not marked successful"*) ;;
+*) log "could not read the state of slot $s"; exit 1 ;;
+esac
+case "$(qbootctl -b $s 2>/dev/null)" in
+*"is marked bootable"*) ;;
+*) log "slot $s is marked unbootable, leaving it to the bootloader"; exit 1 ;;
+esac
+
+part=$(readlink -f /dev/disk/by-partlabel/boot_$s)
+name=${part##*/}
+disk=$(basename "$(readlink -f "/sys/class/block/$name/..")")
+case "$disk" in
+sd[a-z]) ;;
+*) log "unexpected disk '$disk' for boot_$s"; exit 1 ;;
+esac
+
+ro=$(cat "/sys/class/block/$disk/ro")
+[ "$ro" = 0 ] || blockdev --setrw "/dev/$disk"
+rc=0
+qbootctl -m $s || rc=$?
+[ "$ro" = 0 ] || blockdev --setro "/dev/$disk"
+[ "$rc" = 0 ] || { log "qbootctl failed ($rc)"; exit "$rc"; }
+log "marked slot $s successful on /dev/$disk"

@@ -1,0 +1,19 @@
+Source: erhai-motion
+Section: utils
+Priority: optional
+Maintainer: erhai <erhai@localhost>
+Build-Depends: debhelper-compat (= 13),
+ pkgconf,
+ libssc-dev,
+ libglib2.0-dev
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+
+Package: erhai-motion
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Motion sensor input device for the OnePlus Pad 3
+ Presents the accelerometer and gyroscope of the sensor core as an input
+ device with the motion sensor layout of game controllers, for games and
+ other programs that read motion. The sensors stream only while a program
+ holds the device open.

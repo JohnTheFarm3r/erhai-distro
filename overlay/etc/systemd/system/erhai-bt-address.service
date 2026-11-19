@@ -1,0 +1,12 @@
+[Unit]
+Description=Bluetooth controller address
+Before=bluetooth.service
+ConditionPathExists=/sys/class/bluetooth
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/erhai-bt-address
+
+[Install]
+WantedBy=bluetooth.target

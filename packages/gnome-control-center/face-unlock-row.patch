@@ -1,0 +1,130 @@
+--- a/panels/system/users/cc-user-page.blp
++++ b/panels/system/users/cc-user-page.blp
+@@ -102,6 +102,15 @@
+             activated => $change_fingerprint(template);
+           }
+ 
++          $CcListRow face_row {
++            visible: false;
++            title: _("Face _Unlock");
++            use-underline: true;
++            activatable: true;
++            show-arrow: true;
++            activated => $change_face_unlock(template);
++          }
++
+           Adw.ActionRow auto_login_row {
+             title: _("A_utomatic Login");
+             use-underline: true;
+--- a/panels/system/users/cc-user-page.c
++++ b/panels/system/users/cc-user-page.c
+@@ -34,6 +34,7 @@
+ #include "cc-avatar-chooser.h"
+ #include "cc-fingerprint-dialog.h"
+ #include "cc-fingerprint-manager.h"
++#include <gio/gdesktopappinfo.h>
+ #include "cc-language-chooser.h"
+ #include "cc-list-row.h"
+ #include "cc-list-row-info-button.h"
+@@ -68,6 +69,8 @@
+     GtkSwitch           *auto_login_switch;
+     AdwPreferencesGroup *button_group;
+     CcListRow           *fingerprint_row;
++    CcListRow           *face_row;
++    gboolean             face_row_watching;
+     CcListRow           *language_row;
+     AdwEntryRow         *fullname_row;
+ #ifdef HAVE_MALCONTENT
+@@ -469,6 +472,59 @@
+     return act_user_get_uid (user) == getuid ();
+ }
+ 
++/* Face unlock is set up in its own window; the row shows whether the user
++ * has a face enrolled and opens that window. It manages the current user. */
++#define FACE_UNLOCK_APP "org.erhai.FaceUnlock.desktop"
++#define FACE_UNLOCK_STORE "/var/lib/erhai-face"
++
++static void
++update_face_row_state (CcUserPage *self)
++{
++    g_autoptr(GDesktopAppInfo) app = g_desktop_app_info_new (FACE_UNLOCK_APP);
++    g_autofree gchar *path = NULL;
++    gboolean visible;
++
++    visible = app != NULL && is_current_user (self->user) &&
++              act_user_is_local_account (self->user);
++    gtk_widget_set_visible (GTK_WIDGET (self->face_row), visible);
++    if (!visible)
++        return;
++
++    path = g_strdup_printf (FACE_UNLOCK_STORE "/%s.npy", act_user_get_user_name (self->user));
++    cc_list_row_set_secondary_label (self->face_row,
++                                     g_file_test (path, G_FILE_TEST_EXISTS) ?
++                                     _("Enabled") : _("Disabled"));
++}
++
++static void
++change_face_unlock (CcUserPage *self)
++{
++    g_autoptr(GDesktopAppInfo) app = g_desktop_app_info_new (FACE_UNLOCK_APP);
++    g_autoptr(GdkAppLaunchContext) context = NULL;
++    g_autoptr(GError) error = NULL;
++
++    if (!app)
++        return;
++    context = gdk_display_get_app_launch_context (gtk_widget_get_display (GTK_WIDGET (self)));
++    if (!g_app_info_launch (G_APP_INFO (app), NULL, G_APP_LAUNCH_CONTEXT (context), &error))
++        g_warning ("Failed to start Face Unlock: %s", error->message);
++}
++
++/* Refresh the face row whenever the window becomes active again, e.g. after
++ * the Face Unlock window has been closed. */
++static void
++face_row_watch_window (CcUserPage *self)
++{
++    GtkRoot *root = gtk_widget_get_root (GTK_WIDGET (self));
++
++    if (self->face_row_watching || !GTK_IS_WINDOW (root))
++        return;
++    self->face_row_watching = TRUE;
++    g_signal_connect_object (root, "notify::is-active",
++                             G_CALLBACK (update_face_row_state), self,
++                             G_CONNECT_SWAPPED);
++}
++
+ static void
+ update_editable_state (CcUserPage *self)
+ {
+@@ -659,6 +715,7 @@
+     gtk_widget_class_bind_template_child (widget_class, CcUserPage, auto_login_switch);
+     gtk_widget_class_bind_template_child (widget_class, CcUserPage, button_group);
+     gtk_widget_class_bind_template_child (widget_class, CcUserPage, fingerprint_row);
++    gtk_widget_class_bind_template_child (widget_class, CcUserPage, face_row);
+     gtk_widget_class_bind_template_child (widget_class, CcUserPage, fullname_row);
+     gtk_widget_class_bind_template_child (widget_class, CcUserPage, language_row);
+ #ifdef HAVE_MALCONTENT
+@@ -674,6 +731,7 @@
+     gtk_widget_class_bind_template_callback (widget_class, account_type_changed);
+     gtk_widget_class_bind_template_callback (widget_class, autologin_changed);
+     gtk_widget_class_bind_template_callback (widget_class, change_fingerprint);
++    gtk_widget_class_bind_template_callback (widget_class, change_face_unlock);
+     gtk_widget_class_bind_template_callback (widget_class, show_language_chooser);
+     gtk_widget_class_bind_template_callback (widget_class, change_password);
+     gtk_widget_class_bind_template_callback (widget_class, fullname_entry_apply_cb);
+@@ -692,6 +750,8 @@
+     self->avatar_chooser = cc_avatar_chooser_new ();
+     gtk_menu_button_set_popover (self->avatar_edit_button, GTK_WIDGET (self->avatar_chooser));
+ 
++    g_signal_connect (self, "map", G_CALLBACK (face_row_watch_window), NULL);
++
+ #ifdef HAVE_MALCONTENT
+     /* Parental Controls: Unavailable if user is admin or if
+      * malcontent-control is not available (which can happen if
+@@ -776,6 +836,7 @@
+                                  G_CONNECT_SWAPPED);
+         update_fingerprint_row_state (self, NULL, self->fingerprint_manager);
+     }
++    update_face_row_state (self);
+ 
+     cc_permission_infobar_set_permission (self->permission_infobar, permission);
+     g_object_bind_property (permission, "allowed", self, "locked", G_BINDING_SYNC_CREATE | G_BINDING_INVERT_BOOLEAN);

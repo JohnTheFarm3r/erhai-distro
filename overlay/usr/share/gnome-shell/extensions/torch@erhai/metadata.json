@@ -1,0 +1,6 @@
+{
+  "uuid": "torch@erhai",
+  "name": "Torch",
+  "description": "Switch the rear flash LEDs on as a torch from the quick settings.",
+  "shell-version": ["50"]
+}

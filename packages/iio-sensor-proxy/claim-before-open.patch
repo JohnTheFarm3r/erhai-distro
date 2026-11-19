@@ -1,0 +1,51 @@
+--- a/src/iio-sensor-proxy.c
++++ b/src/iio-sensor-proxy.c
+@@ -122,6 +122,14 @@
+ 	return (DRIVER_FOR_TYPE(driver_type) != NULL);
+ }
+ 
++/* The driver is found and its device is open, so it can be polled. */
++static gboolean
++device_for_type_ready (SensorData *data,
++		       DriverType  driver_type)
++{
++	return (DEVICE_FOR_TYPE(driver_type) != NULL);
++}
++
+ static gboolean
+ find_sensors (GUdevClient *client,
+ 	      SensorData  *data)
+@@ -423,7 +431,7 @@
+ 
+ 	g_hash_table_remove (ht, sender);
+ 
+-	if (driver_type_exists (data, driver_type) &&
++	if (device_for_type_ready (data, driver_type) &&
+ 	    g_hash_table_size (ht) == 0) {
+ 		SensorDevice *sensor_device = DEVICE_FOR_TYPE(driver_type);
+ 		driver_set_polling (sensor_device, FALSE);
+@@ -522,7 +530,7 @@
+ 							   NULL);
+ 		g_hash_table_insert (ht, g_strdup (sender), GUINT_TO_POINTER (watch_id));
+ 
+-		if (driver_type_exists (data, driver_type)) {
++		if (device_for_type_ready (data, driver_type)) {
+ 			SensorDevice *sensor_device = DEVICE_FOR_TYPE(driver_type);
+ 
+ 			/* No other clients for this sensor? Start it */
+@@ -779,6 +787,15 @@
+ 		}
+ 
+ 		DEVICE_FOR_TYPE(i) = sensor_device;
++
++		/* Discovering and opening sensors can take a while (the sensor
++		 * core drivers talk to a DSP), and clients may claim a sensor
++		 * before it is open. Start it for them now, as for a hotplugged
++		 * sensor, or it is never polled. */
++		if (g_hash_table_size (data->clients[i]) > 0) {
++			data->sensor_startup_dbus_event_delayed[i] = TRUE;
++			driver_set_polling (sensor_device, TRUE);
++		}
+ 	}
+ 
+ 	if (!any_sensors_left (data))

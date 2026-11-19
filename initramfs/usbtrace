@@ -1,0 +1,24 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# usbtrace [high-speed|super-speed|super-speed-plus]
+# Re-enumerate the gadget at the given max speed and show DWC3 endpoint-0 traffic.
+T=/sys/kernel/tracing g=/sys/kernel/config/usb_gadget/erhai
+mount -t tracefs nodev $T 2>/dev/null
+echo 0 > $T/tracing_on; : > $T/trace; echo 4096 > $T/buffer_size_kb
+for e in dwc3_ctrl_req dwc3_event dwc3_gadget_giveback dwc3_prepare_trb dwc3_complete_trb dwc3_gadget_ep_cmd; do
+	echo 1 > $T/events/dwc3/$e/enable
+done
+udc=$(cat $g/UDC); [ -n "$udc" ] || udc=$(ls /sys/class/udc | head -n 1)
+echo "" > $g/UDC 2>/dev/null; sleep 1
+[ -n "$1" ] && echo "$1" > $g/max_speed
+echo 1 > $T/tracing_on
+echo "$udc" > $g/UDC
+echo "max_speed=$(cat $g/max_speed), tracing 10 s ..."; sleep 10
+echo 0 > $T/tracing_on
+cp $T/trace /run/usbtrace.txt
+u=/sys/class/udc/$udc
+echo "== state=$(cat $u/state) speed=$(cat $u/current_speed)"
+echo "== link events"
+grep dwc3_event /run/usbtrace.txt | grep -oE '\): [A-Z][A-Za-z ]+' | sed 's/^): //' | uniq -c | tail -n 6
+echo "== ep0 sequence (last 22)"
+grep -E 'dwc3_ctrl_req|ep0(in|out)' /run/usbtrace.txt | sed -E 's/^.*(dwc3_[a-z_]+): 0x[0-9a-f]+: /\1 /; s/dwc3_//; s/ trb [0-9a-f]+ \(E[0-9]+:D[0-9]+\) buf [0-9a-f]+//; s/ req [0-9a-f]+//; s/ sofn [0-9a-f]+//' | cut -c1-120 | tail -n 22

@@ -1,0 +1,17 @@
+[Unit]
+Description=Face unlock check
+
+[Service]
+ExecStart=/usr/libexec/erhai-face-check
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+RuntimeMaxSec=20
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes

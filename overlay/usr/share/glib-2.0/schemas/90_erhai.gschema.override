@@ -1,0 +1,8 @@
+# Defaults for the tablet; Settings can still change them.
+[org.gnome.settings-daemon.plugins.power]
+# Sleep after 5 minutes without use on battery.
+sleep-inactive-battery-timeout=300
+
+[org.gnome.shell]
+# The torch toggle in the quick settings.
+enabled-extensions=['torch@erhai']

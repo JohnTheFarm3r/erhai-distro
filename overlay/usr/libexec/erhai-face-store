@@ -1,0 +1,59 @@
+#!/usr/bin/python3 -I
+# SPDX-License-Identifier: GPL-2.0-only
+"""Store, remove or test the face of the calling user (run through pkexec).
+
+save, remove: stdin holds the user's password on the first line, then for
+"save" the face feature vectors as a NumPy array. The password is checked
+against the system password with unix_chkpwd, so changing face unlock never
+accepts a face. test: runs the same face check as the PAM helper; exit 0 on
+a match, 3 without one.
+usage: erhai-face-store save|remove|test
+"""
+import io
+import os
+import pwd
+import subprocess
+import sys
+import time
+
+import numpy as np
+
+sys.path.insert(0, '/usr/lib/erhai-face')
+import erhai_face  # noqa: E402
+
+
+def password_ok(user, password):
+    r = subprocess.run(['/usr/sbin/unix_chkpwd', user, 'nullok'],
+                       input=password + b'\0', capture_output=True)
+    return r.returncode == 0
+
+
+def main():
+    if len(sys.argv) != 2 or sys.argv[1] not in ('save', 'remove', 'test'):
+        sys.exit('usage: erhai-face-store save|remove|test')
+    uid = int(os.environ.get('PKEXEC_UID', '-1'))
+    if uid < 1000:
+        sys.exit('only for a regular user, through pkexec')
+    user = pwd.getpwuid(uid).pw_name
+    if sys.argv[1] == 'test':
+        os.environ['LIBCAMERA_LOG_LEVELS'] = '*:FATAL'
+        return 0 if erhai_face.enrolled(user) and erhai_face.verify(user, 5.0) else 3
+    data = sys.stdin.buffer.read(4 << 20)
+    password, _, rest = data.partition(b'\n')
+    if not password_ok(user, password):
+        time.sleep(2)
+        print('wrong password', file=sys.stderr)
+        return 2
+    if sys.argv[1] == 'remove':
+        erhai_face.remove(user)
+        return 0
+    feats = np.load(io.BytesIO(rest), allow_pickle=False)
+    if feats.ndim != 2 or feats.shape[1] != 128 or not 1 <= len(feats) <= 64:
+        print('bad face data', file=sys.stderr)
+        return 1
+    erhai_face.save(user, feats)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

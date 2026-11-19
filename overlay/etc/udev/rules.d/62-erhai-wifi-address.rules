@@ -1,0 +1,2 @@
+# The WiFi interface gets a fixed address of its own (erhai-wifi-address).
+ACTION=="add", SUBSYSTEM=="net", DRIVERS=="ath12k*_pci", RUN+="/usr/local/bin/erhai-wifi-address $attr{ifindex}"

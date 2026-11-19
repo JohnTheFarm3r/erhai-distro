@@ -1,0 +1,13 @@
+# Mark the boot successful for the bootloader once the desktop has started.
+# This replaces qbootctl.service from the package (masked here), which runs
+# early and expects every LUN to be writable.
+[Unit]
+Description=Mark this boot successful for the bootloader
+After=graphical.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/erhai-boot-successful
+
+[Install]
+WantedBy=graphical.target

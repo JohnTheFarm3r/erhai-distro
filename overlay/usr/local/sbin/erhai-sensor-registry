@@ -1,0 +1,16 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# The sensor registry carries the tablet's own factory calibration, so it is
+# not part of the image: on the first boot it is copied from this tablet's
+# persist partition, mounted read-only without replaying its journal. The
+# sensor core keeps it up to date from then on.
+set -eu
+R=/var/lib/hexagonrpcd/sensors-registry
+m=$(mktemp -d)
+trap 'umount "$m" 2>/dev/null || :; rmdir "$m"' EXIT
+mount -t ext4 -o ro,noload,nodev,nosuid,noexec /dev/disk/by-partlabel/persist "$m"
+[ -n "$(ls -A "$m/sensors/registry/registry")" ]
+rm -rf "$R.new"
+cp -a "$m/sensors/registry/registry" "$R.new"
+chown -R fastrpc:fastrpc "$R.new"
+mv "$R.new" "$R"

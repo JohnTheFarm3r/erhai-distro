@@ -1,0 +1,34 @@
+diff -ru a/bootctrl_impl.c b/bootctrl_impl.c
+--- a/bootctrl_impl.c
++++ b/bootctrl_impl.c
+@@ -202,6 +202,14 @@
+ 		else
+ 			partName = buf + strlen(BOOT_DEV_DIR) + 1;
+ 
++		/*
++		 * The bootloader keeps the slot state (retry count, successful,
++		 * unbootable) on the boot partition entry. Mark only that one
++		 * successful and leave the GPT of every other LUN alone.
++		 */
++		if (ab_attr == ATTR_BOOT_SUCCESSFUL && strncmp(partName, "boot_", 5) != 0)
++			continue;
++
+ 		LOGD("%s: partName = '%s'\n", __func__, partName);
+ 
+ 		// If the current partition is for a different disk (e.g. /dev/sde when the current disk is /dev/sda)
+@@ -418,10 +426,11 @@
+ 	}
+ 
+ 	if (unbootable) {
+-		printf("SLOT %s: was marked unbootable, fixing this"
+-		       " (I hope you know what you're doing...)\n",
+-		       slot_suffix_arr[slot]);
+-		update_slot_attribute(&disk, slot, ATTR_BOOTABLE);
++		/* Leave that to the bootloader (fastboot set_active). */
++		fprintf(stderr, "SLOT %s: marked unbootable, not touching it\n",
++			slot_suffix_arr[slot]);
++		ret = -1;
++		goto out;
+ 	}
+ 
+ 	if (successful) {

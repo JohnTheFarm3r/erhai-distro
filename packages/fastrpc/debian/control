@@ -1,0 +1,21 @@
+Source: fastrpc
+Section: libs
+Priority: optional
+Maintainer: erhai <erhai@localhost>
+Build-Depends: debhelper-compat (= 13),
+ pkgconf,
+ libyaml-dev,
+ libbsd-dev,
+ libmd-dev
+Standards-Version: 4.7.0
+Homepage: https://github.com/qualcomm/fastrpc
+Rules-Requires-Root: no
+
+Package: libfastrpc1
+Architecture: any
+Multi-Arch: same
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Qualcomm FastRPC client library for the compute DSP
+ Runs code on the Hexagon compute DSP (the NPU) through the kernel FastRPC
+ driver: libcdsprpc and its default listener. The audio DSP stays with
+ hexagonrpcd, so the DSP daemons and their udev rules are not included.

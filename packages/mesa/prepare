@@ -1,0 +1,4 @@
+# The Ubuntu 26.04 libdrm (2.4.131) has everything this Mesa uses. The
+# version is lowered in the control template too: the build regenerates
+# debian/control from it, and the package dependencies follow it.
+sed -i 's/libdrm-dev (>= 2.4.134-3~)/libdrm-dev (>= 2.4.131)/' debian/control debian/control.in

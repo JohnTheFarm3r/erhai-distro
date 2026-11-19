@@ -1,0 +1,21 @@
+#!/bin/sh
+# The WiFi firmware reports a placeholder address that every tablet shares.
+# Give the interface a fixed address made from the tablet's serial number
+# (locally administered, unicast), the same on every boot. Run by udev when
+# the interface appears, before NetworkManager takes it up. The interface is
+# named by its index: udev renames it while this runs.
+#   usage: erhai-wifi-address <ifindex>
+set -eu
+dev=
+for d in /sys/class/net/*; do
+	[ "$(cat "$d/ifindex" 2>/dev/null)" = "$1" ] && dev=${d##*/} && break
+done
+[ -n "$dev" ] || { echo "erhai-wifi-address: no interface with index $1" >&2; exit 1; }
+ident=$(sed -n 's/.*oplusboot\.serialno=\([^ ]*\).*/\1/p' /proc/cmdline)
+[ -n "$ident" ] || ident=$(cat /etc/machine-id)
+h=$(printf 'erhai-wifi-%s' "$ident" | sha256sum | cut -c1-12)
+first=$(printf '%02x' $(( (0x$(echo "$h" | cut -c1-2) & 0xfc) | 0x02 )))
+addr=$(echo "$first$(echo "$h" | cut -c3-12)" | sed 's/../&:/g; s/:$//')
+[ "$(cat "/sys/class/net/$dev/address")" = "$addr" ] && exit 0
+ip link set dev "$dev" down
+ip link set dev "$dev" address "$addr"

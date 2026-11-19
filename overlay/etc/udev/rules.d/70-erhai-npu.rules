@@ -1,0 +1,3 @@
+# The compute DSP (NPU) for the logged-in user. The secure node and the
+# audio DSP stay with the fastrpc group.
+SUBSYSTEM=="misc", KERNEL=="fastrpc-cdsp", TAG+="uaccess"

@@ -1,0 +1,17 @@
+Source: erhai-speakers
+Section: sound
+Priority: optional
+Maintainer: erhai <erhai@localhost>
+Build-Depends: debhelper-compat (= 13),
+ pkgconf,
+ libasound2-dev
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+
+Package: erhai-speakers
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, e2fsprogs
+Description: Thermal speaker protection for the OnePlus Pad 3
+ Follows the current each speaker amplifier reports, models the voice
+ coil temperature of every speaker from it and the factory calibration,
+ and turns a speaker down before its coil overheats.

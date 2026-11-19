@@ -1,0 +1,5 @@
+# libcamera allocates its processed camera frames from a DMA heap. Give the
+# video group the system heap and udmabuf (ordinary memory, any size); the
+# CMA heaps stay root only, since full resolution frames exhaust CMA.
+SUBSYSTEM=="dma_heap", KERNEL=="system", GROUP="video", MODE="0660", TAG+="uaccess"
+KERNEL=="udmabuf", GROUP="video", MODE="0660", TAG+="uaccess"

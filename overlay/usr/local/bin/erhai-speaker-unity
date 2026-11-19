@@ -1,0 +1,31 @@
+#!/bin/sh
+# Bring up the protected "Speakers" sink once the sound card is present:
+# start the filter chain (60-erhai-speaker-protection.conf) and keep the raw
+# speaker sink behind it at unity.
+node() { timeout 5 wpctl status -n 2>/dev/null | sed -n "s/^[^0-9]*\([0-9][0-9]*\)\. $1[ [].*/\1/p" | head -1; }
+for i in $(seq 1 60); do
+	hw=$(node 'alsa_output\.platform-sound\.HiFi__Speaker__sink')
+	[ -n "$hw" ] && break
+	sleep 1
+done
+[ -n "$hw" ] || exit 1
+# Until the protected sink exists, the raw one stays muted. Which sink is
+# the default is decided by the WirePlumber policy (default-output.lua).
+timeout 5 wpctl set-mute "$hw" 1
+# Restart rather than start: a filter chain that came up together with
+# PipeWire can be connected without having created its nodes, so it is
+# restarted until its sink appears.
+for try in 1 2 3 4; do
+	systemctl --user restart filter-chain.service
+	for i in $(seq 1 10); do
+		p=$(node 'erhai\.speaker')
+		if [ -n "$p" ]; then
+			timeout 5 wpctl set-volume "$hw" 1.0
+			timeout 5 wpctl set-mute "$hw" 0
+			exit 0
+		fi
+		sleep 0.5
+	done
+done
+# No protection: the raw speakers stay muted.
+exit 1

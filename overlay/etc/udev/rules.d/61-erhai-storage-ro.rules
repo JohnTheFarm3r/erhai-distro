@@ -1,0 +1,4 @@
+# Every UFS LUN and partition stays read-only, except the Linux root partition
+# (userdata) and the disk that holds it. Hidden from udisks either way. Other
+# disks, such as USB drives, are not touched.
+SUBSYSTEM=="block", KERNEL=="sd*", ENV{DEVPATH}=="*.ufs/*", ACTION=="add|change", RUN+="/usr/local/sbin/erhai-storage-ro userdata %k", ENV{UDISKS_IGNORE}="1"

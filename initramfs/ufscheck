@@ -1,0 +1,17 @@
+#!/bin/sh
+# ufscheck            list UFS partitions (name, device, size, ro flag)
+# ufscheck NAME...    sha256 of the named partitions (read only)
+list() {
+	for u in /sys/class/block/sd*/uevent; do
+		p=$(sed -n 's/^PARTNAME=//p' "$u"); [ -n "$p" ] || continue
+		d=${u%/uevent}; n=${d##*/}
+		echo "$p $n $(( $(cat "$d/size") / 2 ))K ro=$(cat "$d/ro")"
+	done
+}
+if [ $# -eq 0 ]; then list; exit; fi
+for want in "$@"; do
+	n=$(list | awk -v w="$want" '$1==w {print $2; exit}')
+	[ -n "$n" ] || { echo "$want: not found"; continue; }
+	[ "$(cat /sys/class/block/$n/ro)" = 1 ] || { echo "$want: /dev/$n not read-only, refusing"; continue; }
+	echo "$(sha256sum < /dev/$n | cut -d' ' -f1)  $want"
+done

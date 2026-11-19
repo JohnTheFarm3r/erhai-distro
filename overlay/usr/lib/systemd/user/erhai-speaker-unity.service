@@ -1,0 +1,15 @@
+# Runs again whenever PipeWire or WirePlumber restarts, so the protected sink
+# is always back before anything plays.
+[Unit]
+Description=Protected speaker output
+After=pipewire.service wireplumber.service
+Wants=wireplumber.service
+PartOf=pipewire.service wireplumber.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/erhai-speaker-unity
+
+[Install]
+WantedBy=default.target pipewire.service wireplumber.service

@@ -1,0 +1,32 @@
+# What a system update keeps from the old system (initramfs/storage); paths
+# relative to /, shell patterns allowed. The account files are merged with
+# the new system's own.
+etc/passwd
+etc/shadow
+etc/group
+etc/gshadow
+etc/subuid
+etc/subgid
+etc/hostname
+etc/hosts
+etc/machine-id
+etc/localtime
+etc/timezone
+etc/default/locale
+etc/default/keyboard
+etc/gdm3/custom.conf
+etc/NetworkManager/system-connections
+etc/ssh/ssh_host_*
+var/lib/NetworkManager
+var/lib/bluetooth
+var/lib/AccountsService
+var/lib/erhai
+var/lib/erhai-face
+var/lib/fprint
+var/lib/colord
+var/lib/power-profiles-daemon
+var/lib/systemd/timesync
+root
+# The systemd units of App Center apps (the apps themselves are on /data).
+etc/systemd/system/snap*
+etc/systemd/system/*.wants/snap*

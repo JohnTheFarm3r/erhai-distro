@@ -1,0 +1,232 @@
+Auto brightness on a logarithmic curve with a dead band.
+
+The stock mapping is linear against the light level at start, so 50%
+more light already gives full brightness. Follow the logarithm of the
+light level instead, move the target only after a change of more than
+about 2.2 times, and glide to it.
+
+--- a/plugins/power/gsd-power-manager.c	2026-11-19 05:21:47.870242496 +0100
++++ b/plugins/power/gsd-power-manager.c	2026-11-19 05:22:01.102233911 +0100
+@@ -22,6 +22,7 @@
+ 
+ #include "config.h"
+ 
++#include <math.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <glib/gi18n.h>
+@@ -82,22 +83,26 @@
+ /* And the time before we stop the warning sound */
+ #define GSD_STOP_SOUND_DELAY GSD_ACTION_DELAY - 2
+ 
+-/* The bandwidth of the low-pass filter used to smooth ambient light readings,
+- * measured in Hz.  Smaller numbers result in smoother backlight changes.
+- * Larger numbers are more responsive to abrupt changes in ambient light. */
+-#define GSD_AMBIENT_BANDWIDTH_HZ       0.1f
+-
+-/* Convert bandwidth to time constant.  Units of constant are microseconds. */
+-#define GSD_AMBIENT_TIME_CONSTANT       (G_USEC_PER_SEC * 1.0f / (2.0f * G_PI * GSD_AMBIENT_BANDWIDTH_HZ))
+-
+ /* How often to send target brightness updates to the shell.
+  * This is currently 10 times a second; but the shell should handle animating
+  * for us in the future so we can drop this value to ~1 time per second. */
+ #define GSD_AMBIENT_SEND_UPDATE_INTERVAL (G_USEC_PER_SEC * 0.1f)
+ 
+-/* Normalize against this factor of the current absolute reading.
+- * The value has been chosen arbitrarily but seems to work in practice. */
+-#define GSD_AMBIENT_NORMALIZE_CONSTANT (1.5f)
++/* Auto brightness follows the logarithm of the light level, as the eye
++ * does: a fixed brightness step for each tenfold change of light. The
++ * slider in the shell adds its bias on top. */
++#define GSD_AMBIENT_CURVE_BASE         15.0    /* percent in darkness */
++#define GSD_AMBIENT_CURVE_SLOPE        20.0    /* percent per tenfold light */
++/* Smoothing of the light level, so flicker and brief shadows pass. */
++#define GSD_AMBIENT_LEVEL_TIME_CONSTANT (G_USEC_PER_SEC * 3.0)
++/* The target moves only once the smoothed light level has changed by more
++ * than this many decades (0.35 is a factor of 2.2): a face lit a little
++ * more or a screen in the background does not move it, a lamp switched
++ * on or a window does. It then follows the light until it settles. */
++#define GSD_AMBIENT_DEADBAND           0.35
++#define GSD_AMBIENT_SETTLED            0.05
++/* Glide time towards a new target. */
++#define GSD_AMBIENT_GLIDE_TIME_CONSTANT (G_USEC_PER_SEC * 1.5)
+ 
+ static const gchar introspection_xml[] =
+ "<node>"
+@@ -175,9 +180,13 @@
+         guint                    iio_proxy_watch_id;
+         gboolean                 ambient_norm_required;
+         gdouble                  ambient_accumulator;
+-        gdouble                  ambient_norm_value;
+         gint64                   ambient_update_last_time;
+         gint64                   ambient_set_last_time;
++        gdouble                  ambient_level;
++        gdouble                  ambient_anchor;
++        gboolean                 ambient_tracking;
++        gint64                   ambient_glide_last_time;
++        guint                    ambient_glide_id;
+ 
+         /* Power Profiles */
+         GDBusProxy              *power_profiles_proxy;
+@@ -2941,13 +2950,67 @@
+         }
+ }
+ 
++static gdouble
++ambient_curve (gdouble level)
++{
++        return CLAMP (GSD_AMBIENT_CURVE_BASE + GSD_AMBIENT_CURVE_SLOPE * level, 0.0, 100.0);
++}
++
++static gboolean ambient_glide_cb (gpointer user_data);
++
++/* Move the brightness towards the target for the current anchor, and keep
++ * moving between sensor readings until it arrives. */
++static void
++ambient_glide (GsdPowerManager *manager)
++{
++        gdouble goal = ambient_curve (manager->ambient_anchor);
++        gint64 now = g_get_monotonic_time ();
++
++        if (manager->ambient_glide_last_time) {
++                gdouble dt = now - manager->ambient_glide_last_time;
++                gdouble beta = dt / (dt + GSD_AMBIENT_GLIDE_TIME_CONSTANT);
++
++                manager->ambient_accumulator += beta * (goal - manager->ambient_accumulator);
++        }
++        manager->ambient_glide_last_time = now;
++        if (fabs (goal - manager->ambient_accumulator) < 0.2)
++                manager->ambient_accumulator = goal;
++
++        if (now - manager->ambient_set_last_time >= GSD_AMBIENT_SEND_UPDATE_INTERVAL ||
++            manager->ambient_accumulator == goal) {
++                shell_brightness_set_auto_target (manager,
++                                                  manager->ambient_accumulator / 100.0);
++                manager->ambient_set_last_time = now;
++        }
++
++        if (manager->ambient_accumulator != goal) {
++                if (!manager->ambient_glide_id)
++                        manager->ambient_glide_id = g_timeout_add (100, ambient_glide_cb, manager);
++        } else {
++                g_clear_handle_id (&manager->ambient_glide_id, g_source_remove);
++                manager->ambient_glide_last_time = 0;
++        }
++}
++
++static gboolean
++ambient_glide_cb (gpointer user_data)
++{
++        GsdPowerManager *manager = user_data;
++
++        manager->ambient_glide_id = 0;
++        if (g_settings_get_boolean (manager->settings, "ambient-enabled") &&
++            manager->ambient_accumulator >= 0.f)
++                ambient_glide (manager);
++        return G_SOURCE_REMOVE;
++}
++
+ static void
+ iio_proxy_changed (GsdPowerManager *manager)
+ {
+         g_autoptr (GVariant) val_has = NULL;
+         g_autoptr (GVariant) val_als = NULL;
+         gdouble ambient_last_absolute;
+-        gdouble brightness;
++        gdouble level;
+         gdouble alpha;
+         gint64 current_time;
+ 
+@@ -2964,50 +3027,42 @@
+         if (val_has == NULL || !g_variant_get_boolean (val_has))
+                 return;
+         val_als = g_dbus_proxy_get_cached_property (manager->iio_proxy, "LightLevel");
+-        if (val_als == NULL || g_variant_get_double (val_als) <= 0.f)
++        if (val_als == NULL || g_variant_get_double (val_als) < 0.f)
+                 return;
+         ambient_last_absolute = g_variant_get_double (val_als);
+         g_debug ("Read absolute light level: %f", ambient_last_absolute);
+ 
+-        /* the user has asked to renormalize */
+-        if (manager->ambient_norm_required) {
+-                g_debug ("Normalizing light level");
+-
+-                manager->ambient_norm_value = ambient_last_absolute * GSD_AMBIENT_NORMALIZE_CONSTANT;
+-                if (manager->ambient_accumulator <= 0.f)
+-                        manager->ambient_accumulator = 100.f / GSD_AMBIENT_NORMALIZE_CONSTANT;
++        level = log10 (ambient_last_absolute + 1.0);
++        current_time = g_get_monotonic_time ();
+ 
++        /* the first reading, or the user moved the slider: start here */
++        if (manager->ambient_norm_required || manager->ambient_update_last_time == 0) {
++                manager->ambient_level = level;
++                manager->ambient_anchor = level;
++                manager->ambient_tracking = FALSE;
++                if (manager->ambient_accumulator < 0.f)
++                        manager->ambient_accumulator = ambient_curve (level);
+                 manager->ambient_norm_required = FALSE;
+-        }
++        } else {
++                gdouble dt = current_time - manager->ambient_update_last_time;
+ 
+-        /* time-weighted constant for moving average */
+-        current_time = g_get_monotonic_time();
+-        if (manager->ambient_update_last_time)
+-                alpha = 1.0f / (1.0f + (GSD_AMBIENT_TIME_CONSTANT / (current_time - manager->ambient_update_last_time)));
+-        else
+-                alpha = 0.0f;
++                alpha = dt / (dt + GSD_AMBIENT_LEVEL_TIME_CONSTANT);
++                manager->ambient_level += alpha * (level - manager->ambient_level);
++        }
+         manager->ambient_update_last_time = current_time;
+ 
+-        /* calculate exponential weighted moving average */
+-        brightness = ambient_last_absolute * 100.f / manager->ambient_norm_value;
+-        brightness = MIN (brightness, 100.f);
+-        brightness = MAX (brightness, 0.f);
+-
+-        manager->ambient_accumulator = (alpha * brightness) +
+-                (1.0 - alpha) * manager->ambient_accumulator;
+-
+-        /* no valid readings yet */
+-        if (manager->ambient_accumulator < 0.f)
+-                return;
++        if (fabs (manager->ambient_level - manager->ambient_anchor) >= GSD_AMBIENT_DEADBAND)
++                manager->ambient_tracking = TRUE;
++        if (manager->ambient_tracking) {
++                manager->ambient_anchor = manager->ambient_level;
++                if (fabs (level - manager->ambient_level) < GSD_AMBIENT_SETTLED)
++                        manager->ambient_tracking = FALSE;
++        }
++        g_debug ("Light %.1f lux, smoothed %.2f, anchor %.2f, target %.1f%%",
++                 ambient_last_absolute, manager->ambient_level,
++                 manager->ambient_anchor, ambient_curve (manager->ambient_anchor));
+ 
+-        g_debug ("Calculated new target brightness from ambient: %.1f%%",
+-                 manager->ambient_accumulator);
+-
+-        if (current_time - manager->ambient_set_last_time >= GSD_AMBIENT_SEND_UPDATE_INTERVAL) {
+-                shell_brightness_set_auto_target (manager,
+-                                                  manager->ambient_accumulator / 100.0);
+-                manager->ambient_set_last_time = current_time;
+-        }
++        ambient_glide (manager);
+ }
+ 
+ static void
+@@ -3139,7 +3194,6 @@
+                                   manager, NULL);
+         manager->ambient_norm_required = TRUE;
+         manager->ambient_accumulator = -1.f;
+-        manager->ambient_norm_value = -1.f;
+         manager->ambient_update_last_time = 0;
+         manager->ambient_set_last_time = 0;
+ 
+@@ -3313,6 +3367,7 @@
+         g_clear_object (&manager->shell_brightness_proxy);
+ 
+         g_clear_handle_id (&manager->iio_proxy_watch_id, g_bus_unwatch_name);
++        g_clear_handle_id (&manager->ambient_glide_id, g_source_remove);
+ 
+         G_APPLICATION_CLASS (gsd_power_manager_parent_class)->shutdown (app);
+ }

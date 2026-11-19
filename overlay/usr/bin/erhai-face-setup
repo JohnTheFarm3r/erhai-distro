@@ -1,0 +1,370 @@
+#!/usr/bin/python3 -I
+# SPDX-License-Identifier: GPL-2.0-only
+"""Face Unlock settings: set up, test and remove face unlock for the user.
+
+The camera preview and the face features are computed here, in the user's
+session. Saving or removing a face goes through erhai-face-store, which
+checks the user's password (never the face) before it changes anything.
+"""
+import getpass
+import io
+import os
+import subprocess
+import sys
+import threading
+import time
+
+os.environ.setdefault('LIBCAMERA_LOG_LEVELS', '*:FATAL')
+sys.path.insert(0, '/usr/lib/erhai-face')
+
+import cv2  # noqa: E402
+import numpy as np  # noqa: E402
+import gi  # noqa: E402
+gi.require_version('Gtk', '4.0')
+gi.require_version('Adw', '1')
+from gi.repository import Adw, Gdk, GLib, Gtk  # noqa: E402
+
+import erhai_face  # noqa: E402
+
+SAMPLES = 10
+APP_ID = 'org.erhai.FaceUnlock'
+
+
+def head_pose(face):
+    """Rough head turn and tilt from the YuNet landmarks. Turn: the nose's
+    sideways offset from the middle of the eyes, relative to the eye
+    distance. Tilt: the log ratio of the eyes to nose and nose to mouth
+    gaps, which change in opposite directions as the head tilts."""
+    re, le, nose = face[4:6], face[6:8], face[8:10]
+    mouth = (face[10:12] + face[12:14]) / 2
+    eyes = (re + le) / 2
+    eye_dist = np.linalg.norm(le - re) or 1.0
+    upper = max(nose[1] - eyes[1], 1.0)
+    lower = max(mouth[1] - nose[1], 1.0)
+    return (nose[0] - eyes[0]) / eye_dist, float(np.log(upper / lower))
+
+
+# Guided views: (instruction, check against the straight view's pose). The
+# second view of each pair goes the opposite way of the first.
+TURN, TILT = 0.15, 0.25
+# A position that is held for this long without reaching the threshold
+# accepts half the movement, so nobody gets stuck on a step.
+EASE_AFTER = 6.0
+STAGES = [
+    ('Look straight at the camera', 'straight'),
+    ('Slowly turn your head to one side', 'turn'),
+    ('Now turn your head to the other side', 'turn-back'),
+    ('Slowly tilt your head up', 'tilt'),
+    ('Now tilt your head down', 'tilt-back'),
+]
+PER_STAGE = SAMPLES // len(STAGES)
+
+
+class CaptureThread(threading.Thread):
+    """Camera frames to the preview, collecting PER_STAGE face features for
+    each of the guided head positions in STAGES."""
+
+    def __init__(self, win, mode):
+        super().__init__(daemon=True)
+        self.win, self.mode = win, mode
+        self.stop = threading.Event()
+        self.features = []
+
+    def run(self):
+        try:
+            rec = erhai_face.Recognizer()
+            cam = erhai_face.Camera()
+        except Exception as e:  # noqa: B902
+            GLib.idle_add(self.win.capture_failed, str(e))
+            return
+        try:
+            self.loop(rec, cam)
+        finally:
+            cam.close()
+
+    def accepts(self, kind, pose):
+        if kind == 'straight':
+            return abs(pose[0]) < TURN
+        ease = 0.5 if time.monotonic() - self.stage_start > EASE_AFTER else 1.0
+        turn, tilt = TURN * ease, TILT * ease
+        dx, dy = pose[0] - self.base[0], pose[1] - self.base[1]
+        if kind == 'turn':
+            if abs(dx) >= turn:
+                self.side = 1 if dx > 0 else -1
+                return True
+            return False
+        if kind == 'turn-back':
+            return dx * self.side <= -turn
+        # A tilt may come with some sideways turn.
+        if abs(dx) >= 2 * TURN:
+            return False
+        if kind == 'tilt':
+            if abs(dy) >= tilt:
+                self.up = 1 if dy > 0 else -1
+                return True
+            return False
+        return dy * self.up <= -tilt
+
+    def loop(self, rec, cam):
+        tries = 0
+        stage = taken = 0
+        self.pause = 0.0
+        self.stage_start = time.monotonic()
+        recent = []
+        self.base = (0.0, 0.0)
+        GLib.idle_add(self.win.enroll_stage, STAGES[0][0], 0)
+        while not self.stop.is_set():
+            img = cam.frame()
+            if img is None:
+                tries += 1
+                if tries > 5:
+                    GLib.idle_add(self.win.capture_failed, 'no picture from the camera')
+                    return
+                continue
+            im, face = rec.detect(img)
+            view = im if im is not None else img
+            # The preview picture is made here, so the window only shows it.
+            scale = 720 / max(view.shape[:2])
+            small = cv2.resize(view, None, fx=scale, fy=scale)
+            if face is not None:
+                x, y, w, h = (int(v * scale) for v in face[:4])
+                cv2.rectangle(small, (x, y), (x + w, y + h), (120, 220, 90), 4)
+            small = cv2.cvtColor(cv2.flip(small, 1), cv2.COLOR_BGR2RGB)
+            GLib.idle_add(self.win.show_frame, small)
+            if face is None or time.monotonic() < self.pause:
+                continue
+            # The median of the last three frames, against landmark jitter.
+            recent = (recent + [head_pose(face)])[-3:]
+            pose = tuple(np.median(np.array(recent), axis=0))
+            kind = STAGES[stage][1]
+            if not self.accepts(kind, pose):
+                continue
+            if kind == 'straight':
+                # The neutral pose is the mean of the straight views.
+                n = taken + 1
+                self.base = ((self.base[0] * taken + pose[0]) / n,
+                             (self.base[1] * taken + pose[1]) / n)
+            feat = rec.feature(im, face)
+            if any(rec.similarity(feat, f) > 0.985 for f in self.features):
+                continue
+            self.features.append(feat)
+            taken += 1
+            if taken >= PER_STAGE:
+                stage, taken = stage + 1, 0
+                if stage == len(STAGES):
+                    GLib.idle_add(self.win.enroll_done, np.array(self.features))
+                    return
+                # A short pause between positions, so each one is a separate
+                # movement; the preview keeps running.
+                self.pause = time.monotonic() + 0.6
+                self.stage_start = self.pause
+                recent = []
+            GLib.idle_add(self.win.enroll_stage, STAGES[stage][0], len(self.features))
+
+
+class Window(Adw.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title='Face Unlock',
+                         default_width=560, default_height=720)
+        self.user = getpass.getuser()
+        self.capture = None
+        self.pending = None
+        self.toasts = Adw.ToastOverlay()
+        view = Adw.ToolbarView()
+        view.add_top_bar(Adw.HeaderBar())
+        self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE)
+        view.set_content(self.stack)
+        self.toasts.set_child(view)
+        self.set_content(self.toasts)
+        self.stack.add_named(self.build_status(), 'status')
+        self.stack.add_named(self.build_camera(), 'camera')
+        self.connect('close-request', lambda *_: self.stop_capture() or False)
+        self.refresh()
+
+    # Pages
+
+    def build_status(self):
+        self.status = Adw.StatusPage(icon_name='camera-web-symbolic')
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
+                      halign=Gtk.Align.CENTER)
+        self.setup_btn = Gtk.Button(css_classes=['pill', 'suggested-action'])
+        self.setup_btn.connect('clicked', lambda *_: self.start('enroll'))
+        self.test_btn = Gtk.Button(label='Test', css_classes=['pill'])
+        self.test_btn.connect('clicked', lambda *_: self.start('test'))
+        self.remove_btn = Gtk.Button(label='Remove Face', css_classes=['pill', 'destructive-action'])
+        self.remove_btn.connect('clicked', lambda *_: self.ask_password('remove'))
+        for b in (self.setup_btn, self.test_btn, self.remove_btn):
+            box.append(b)
+        note = Gtk.Label(wrap=True, justify=Gtk.Justification.CENTER, css_classes=['dim-label'],
+                         label='Face unlock works on the lock screen, for sudo and for '
+                               'administrator prompts. The first login after a restart '
+                               'always asks for your password, and the password works '
+                               'everywhere at any time. The front camera has no depth '
+                               'or infrared sensing, so a photo of you could unlock it.')
+        note.set_max_width_chars(48)
+        box.append(note)
+        self.status.set_child(box)
+        return self.status
+
+    def build_camera(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
+                      margin_top=12, margin_bottom=24, margin_start=24, margin_end=24)
+        self.picture = Gtk.Picture(content_fit=Gtk.ContentFit.COVER, vexpand=True,
+                                   css_classes=['card'])
+        self.hint = Gtk.Label(css_classes=['title-3'], wrap=True,
+                              justify=Gtk.Justification.CENTER)
+        self.progress = Gtk.ProgressBar()
+        cancel = Gtk.Button(label='Cancel', css_classes=['pill'], halign=Gtk.Align.CENTER)
+        cancel.connect('clicked', lambda *_: self.back())
+        for w in (self.picture, self.hint, self.progress, cancel):
+            box.append(w)
+        return box
+
+    def refresh(self):
+        on = erhai_face.enrolled(self.user)
+        self.status.set_title('Face Unlock Is On' if on else 'Face Unlock')
+        self.status.set_description(
+            'Your face unlocks this tablet.' if on else
+            'Unlock with your face instead of typing your password.')
+        self.setup_btn.set_label('Set Up Again' if on else 'Set Up Face Unlock')
+        self.test_btn.set_visible(on)
+        self.remove_btn.set_visible(on)
+        self.stack.set_visible_child_name('status')
+
+    # Camera
+
+    def start(self, mode):
+        self.progress.set_visible(mode == 'enroll')
+        self.progress.set_fraction(0)
+        self.picture.set_paintable(None)
+        self.stack.set_visible_child_name('camera')
+        if mode == 'test':
+            # The same check as the lock screen, run by the helper; the
+            # camera is its own while it looks.
+            self.hint.set_label('Looking for your face\u2026')
+
+            def work():
+                r = subprocess.run(['pkexec', '/usr/libexec/erhai-face-store', 'test'],
+                                   capture_output=True)
+                GLib.idle_add(self.test_done, r.returncode == 0)
+
+            threading.Thread(target=work, daemon=True).start()
+            return
+        self.hint.set_label(STAGES[0][0])
+        self.capture = CaptureThread(self, mode)
+        self.capture.start()
+
+    def stop_capture(self):
+        if self.capture:
+            self.capture.stop.set()
+            self.capture = None
+
+    def back(self):
+        self.stop_capture()
+        self.refresh()
+
+    def show_frame(self, img):
+        if self.capture is None:
+            return False
+        # Already mirrored, as people expect from a front camera, and RGB.
+        rgb = img
+        h, w = rgb.shape[:2]
+        tex = Gdk.MemoryTexture.new(w, h, Gdk.MemoryFormat.R8G8B8,
+                                    GLib.Bytes.new(rgb.tobytes()), w * 3)
+        self.picture.set_paintable(tex)
+        return False
+
+    def capture_failed(self, msg):
+        self.back()
+        self.toast('Camera not available: ' + msg)
+        return False
+
+    def enroll_stage(self, text, n):
+        if self.capture is None:
+            return False
+        self.hint.set_label(text)
+        self.progress.set_fraction(n / SAMPLES)
+        return False
+
+    def enroll_done(self, feats):
+        self.capture = None
+        self.pending = feats
+        self.ask_password('save')
+        return False
+
+    def test_done(self, ok):
+        self.back()
+        self.toast('Face recognised' if ok else 'Face not recognised')
+        return False
+
+    # Saving and removing, after the password
+
+    def ask_password(self, action):
+        dialog = Adw.AlertDialog(
+            heading='Enter Your Password',
+            body='Your password is needed to ' +
+                 ('save your face.' if action == 'save' else 'remove face unlock.'))
+        entry = Gtk.PasswordEntry(show_peek_icon=True, activates_default=True)
+        dialog.set_extra_child(entry)
+        dialog.add_response('cancel', 'Cancel')
+        dialog.add_response('ok', 'Save' if action == 'save' else 'Remove')
+        dialog.set_response_appearance(
+            'ok', Adw.ResponseAppearance.SUGGESTED if action == 'save'
+            else Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response('ok')
+        dialog.set_close_response('cancel')
+
+        def done(d, response):
+            if response != 'ok':
+                self.pending = None
+                self.refresh()
+                return
+            self.run_store(action, entry.get_text())
+
+        dialog.connect('response', done)
+        dialog.present(self)
+        entry.grab_focus()
+
+    def run_store(self, action, password):
+        data = password.encode() + b'\n'
+        if action == 'save':
+            buf = io.BytesIO()
+            np.save(buf, self.pending.astype(np.float32), allow_pickle=False)
+            data += buf.getvalue()
+
+        def work():
+            r = subprocess.run(['pkexec', '/usr/libexec/erhai-face-store', action],
+                               input=data, capture_output=True)
+            GLib.idle_add(self.store_done, action, r.returncode)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def store_done(self, action, rc):
+        if rc == 0:
+            self.toast('Face unlock is set up' if action == 'save' else 'Face unlock removed')
+            self.pending = None
+            self.refresh()
+        elif rc == 2:
+            self.toast('Wrong password')
+            self.ask_password(action)
+        else:
+            self.pending = None
+            self.refresh()
+            self.toast('Could not change face unlock')
+        return False
+
+    def toast(self, text):
+        self.toasts.add_toast(Adw.Toast(title=text))
+
+
+class App(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID)
+
+    def do_activate(self):
+        win = self.get_active_window() or Window(self)
+        win.present()
+
+
+if __name__ == '__main__':
+    sys.exit(App().run(sys.argv))

@@ -1,0 +1,9 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# One-screen USB gadget diagnostics for the RAM console.
+for u in /sys/class/udc/*; do
+	echo "$(basename "$u"): state=$(cat "$u/state") speed=$(cat "$u/current_speed") max=$(cat "$u/maximum_speed")"
+done
+cat /sys/kernel/config/usb_gadget/erhai/max_speed 2>/dev/null | sed 's/^/gadget max_speed=/'
+for t in /sys/class/typec/port*; do [ -e "$t/data_role" ] && echo "$(basename "$t"): $(cat "$t/data_role") / $(cat "$t/power_role")"; done
+dmesg | grep -iE 'dwc3|a600000|smmu|fault|speed|eusb|repeater|qmp' | tail -n 15

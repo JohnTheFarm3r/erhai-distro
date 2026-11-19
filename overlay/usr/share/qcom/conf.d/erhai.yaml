@@ -1,0 +1,5 @@
+# FastRPC board configuration: where the compute DSP finds its process
+# images, keyed by the device tree model.
+machines:
+  OnePlus Pad 3:
+    DSP_LIBRARY_PATH: sm8750/OnePlus/erhai/dsp/cdsp

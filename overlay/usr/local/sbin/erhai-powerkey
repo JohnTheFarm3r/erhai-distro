@@ -1,0 +1,118 @@
+#!/usr/bin/python3
+# SPDX-License-Identifier: GPL-2.0-only
+"""Power key of the tablet: a short press locks the screen and turns the
+panel off (or wakes the panel when it is off), holding the key opens the
+GNOME dialog to power off or restart.
+
+The PMIC power key is grabbed, so the desktop no longer sees it directly. A
+short press locks the sessions through logind, which GNOME answers by locking
+and turning the panel off. A virtual keyboard passes GNOME the power key
+(GNOME's power button action, "interactive") once the key has been held for
+HOLD seconds, and a wake key to turn the panel on.
+"""
+import fcntl
+import glob
+import os
+import select
+import struct
+import subprocess
+import time
+
+HOLD = 0.8
+EV_SYN, EV_KEY = 0, 1
+KEY_POWER, KEY_WAKEUP = 116, 143
+EVENT = struct.Struct('llHHi')
+EVIOCGRAB = 0x40044590
+UI_SET_EVBIT, UI_SET_KEYBIT = 0x40045564, 0x40045565
+UI_DEV_SETUP, UI_DEV_CREATE = 0x405c5503, 0x5501
+BUS_VIRTUAL = 0x06
+
+
+def find_key():
+    for d in glob.glob('/sys/class/input/event*'):
+        try:
+            with open(d + '/device/name') as f:
+                if f.read().strip() == 'pmic_pwrkey':
+                    return '/dev/input/' + os.path.basename(d)
+        except OSError:
+            pass
+    return None
+
+
+def make_uinput():
+    fd = os.open('/dev/uinput', os.O_WRONLY | os.O_NONBLOCK)
+    fcntl.ioctl(fd, UI_SET_EVBIT, EV_KEY)
+    for k in (KEY_POWER, KEY_WAKEUP):
+        fcntl.ioctl(fd, UI_SET_KEYBIT, k)
+    # struct uinput_setup: input_id (bus, vendor, product, version), name[80],
+    # ff_effects_max
+    setup = struct.pack('HHHH80sI', BUS_VIRTUAL, 0, 0, 1,
+                        b'erhai power key', 0)
+    fcntl.ioctl(fd, UI_DEV_SETUP, setup)
+    fcntl.ioctl(fd, UI_DEV_CREATE)
+    return fd
+
+
+def tap(ui, key):
+    for value in (1, 0):
+        os.write(ui, EVENT.pack(0, 0, EV_KEY, key, value))
+        os.write(ui, EVENT.pack(0, 0, EV_SYN, 0, 0))
+
+
+def panel_on():
+    for p in glob.glob('/sys/class/drm/card*-DSI-*/dpms'):
+        try:
+            with open(p) as f:
+                return f.read().strip() == 'On'
+        except OSError:
+            pass
+    return True
+
+
+def suspended():
+    """Seconds the system has spent suspended since boot."""
+    return time.clock_gettime(time.CLOCK_BOOTTIME) - time.monotonic()
+
+
+def main():
+    dev = None
+    while dev is None:
+        dev = find_key()
+        if dev is None:
+            time.sleep(1)
+    ui = make_uinput()
+    fd = os.open(dev, os.O_RDONLY)
+    fcntl.ioctl(fd, EVIOCGRAB, 1)
+    pressed = None
+    slept = suspended()
+    while True:
+        timeout = None
+        if pressed is not None:
+            timeout = max(0.0, pressed + HOLD - time.monotonic())
+        if not select.select([fd], [], [], timeout)[0]:
+            # Held long enough: ask what to do. The release that follows
+            # is ignored.
+            tap(ui, KEY_POWER)
+            pressed = None
+            continue
+        data = os.read(fd, EVENT.size * 64)
+        for i in range(0, len(data) - EVENT.size + 1, EVENT.size):
+            _, _, typ, code, value = EVENT.unpack_from(data, i)
+            if typ != EV_KEY or code != KEY_POWER:
+                continue
+            if value == 1:
+                pressed = time.monotonic()
+                # A press that woke the system from suspend only wakes the
+                # panel, whatever state it is in by the release.
+                woke = suspended() > slept + 0.5
+                slept = suspended()
+            elif value == 0 and pressed is not None:
+                pressed = None
+                if panel_on() and not woke:
+                    subprocess.run(['loginctl', 'lock-sessions'], check=False)
+                else:
+                    tap(ui, KEY_WAKEUP)
+
+
+if __name__ == '__main__':
+    main()

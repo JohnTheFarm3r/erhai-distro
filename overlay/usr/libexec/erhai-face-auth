@@ -1,0 +1,66 @@
+#!/usr/bin/python3 -I
+# SPDX-License-Identifier: GPL-2.0-only
+"""PAM face check, run by pam_exec before the password prompt.
+
+Exit 0 lets the user in; any other result, an error included, falls through
+to the password, so face unlock can only add a way in, never remove one.
+Face unlock is used for local prompts only, and not for the first login of a
+user after boot: that login unlocks the keyring and asks for the password.
+The camera check itself runs in erhai-face-check, reached through a root
+only socket, so it also works from prompts sandboxed away from the camera.
+"""
+import json
+import os
+import signal
+import socket
+import subprocess
+import sys
+
+# Services with a person in front of the panel.
+SERVICES = {'gdm-password', 'polkit-1', 'sudo', 'sudo-i', 'su', 'su-l'}
+SOCKET = '/run/erhai-face.sock'
+STORE = '/var/lib/erhai-face'
+TIMEOUT = 4.0
+
+
+def has_session(user):
+    """True when user already has a session, so this is not the first login."""
+    try:
+        out = subprocess.run(['loginctl', 'list-sessions', '--json=short'],
+                             capture_output=True, text=True, timeout=3).stdout
+        return any(s.get('user') == user and s.get('class') == 'user'
+                   for s in json.loads(out or '[]'))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+
+
+def main():
+    user = os.environ.get('PAM_USER', '')
+    service = os.environ.get('PAM_SERVICE', '')
+    if os.environ.get('PAM_TYPE', 'auth') != 'auth' or service not in SERVICES:
+        return 1
+    if os.environ.get('PAM_RHOST', '') not in ('', 'localhost'):
+        return 1
+    if not user or '/' in user or user.startswith('.') or ' ' in user:
+        return 1
+    if not os.path.exists(os.path.join(STORE, user + '.npy')):
+        return 1
+    if service == 'gdm-password' and not has_session(user):
+        return 1
+    # Hard limit, whatever happens below.
+    signal.alarm(int(TIMEOUT) + 6)
+    print('Looking for your face…', flush=True)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.settimeout(TIMEOUT + 5)
+        s.connect(SOCKET)
+        s.sendall(('%s %s\n' % (user, service)).encode())
+        return 0 if s.makefile().readline().strip() == 'ok' else 1
+
+
+if __name__ == '__main__':
+    os.dup2(os.open(os.devnull, os.O_WRONLY), 2)
+    try:
+        rc = main()
+    except BaseException:  # noqa: B902, any failure means the password
+        rc = 1
+    sys.exit(rc)

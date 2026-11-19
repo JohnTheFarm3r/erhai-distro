@@ -1,0 +1,17 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: libssc
+Source: https://codeberg.org/DylanVanAssche/libssc
+
+Files: *
+Copyright: 2022-2026 Dylan Van Assche
+License: GPL-3.0-or-later
+
+Files: debian/*
+Copyright: 2026 JohnTheFarm3r
+License: GPL-2.0-only
+
+License: GPL-3.0-or-later
+ On Debian systems the full text is in /usr/share/common-licenses/GPL-3.
+
+License: GPL-2.0-only
+ On Debian systems the full text is in /usr/share/common-licenses/GPL-2.

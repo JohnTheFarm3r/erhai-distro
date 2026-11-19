@@ -1,0 +1,21 @@
+#!/bin/sh
+# storage-ro [RW_PARTNAME] [DEV...]
+# Marks UFS block devices read-only; other disks (USB drives) are left alone. With RW_PARTNAME (e.g. userdata), that one
+# partition and the whole disk that holds it stay writable; everything else,
+# including every other partition on that disk, is set read-only.
+# The whole-disk read-only flag also covers its partitions, so the disk that
+# holds the writable partition cannot carry it.
+rw=$1; [ $# -gt 0 ] && shift
+[ $# -gt 0 ] || set -- $(cd /sys/class/block && ls -d sd* 2>/dev/null)
+for n in "$@"; do
+	n=${n##*/}; d=/sys/class/block/$n
+	[ -e "$d" ] || continue
+	case $(readlink -f "$d") in */*.ufs/*) ;; *) continue ;; esac
+	if [ -e "$d/partition" ]; then
+		p=$(sed -n 's/^PARTNAME=//p' "$d/uevent")
+		[ -n "$rw" ] && [ "$p" = "$rw" ] && continue
+	elif [ -n "$rw" ] && grep -qx "PARTNAME=$rw" "$d"/"$n"*/uevent 2>/dev/null; then
+		continue
+	fi
+	[ "$(cat "$d/ro")" = 1 ] || blockdev --setro "/dev/$n"
+done

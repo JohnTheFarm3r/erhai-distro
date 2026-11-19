@@ -1,0 +1,2 @@
+# The motion sensors for the logged-in user, as for game controllers.
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="OnePlus Pad 3 Motion Sensors", TAG+="uaccess"

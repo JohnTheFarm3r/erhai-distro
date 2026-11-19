@@ -1,0 +1,4 @@
+PRETTY_HOSTNAME="OnePlus Pad 3"
+# Linux runs under the Gunyah hypervisor, which makes systemd report a
+# virtual machine; the desktop then powers off on every power key press.
+CHASSIS=tablet

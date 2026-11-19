@@ -1,0 +1,41 @@
+Source: libssc
+Section: libs
+Priority: optional
+Maintainer: erhai <erhai@localhost>
+Build-Depends: debhelper-compat (= 13),
+ meson,
+ pkgconf,
+ libglib2.0-dev,
+ libqmi-glib-dev,
+ libprotobuf-c-dev,
+ protobuf-c-compiler,
+ protobuf-compiler,
+ libqrtr-glib-dev,
+ python3,
+ python3-dev
+Standards-Version: 4.7.0
+Homepage: https://codeberg.org/DylanVanAssche/libssc
+Rules-Requires-Root: no
+
+Package: libssc2
+Architecture: any
+Multi-Arch: same
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Qualcomm Sensor Core client library
+ Reads the sensors behind the Qualcomm Sensor Core (SSC) on the DSP over
+ QMI: accelerometer, gyroscope, magnetometer, light and proximity.
+
+Package: libssc-dev
+Section: libdevel
+Architecture: any
+Multi-Arch: same
+Depends: libssc2 (= ${binary:Version}), libglib2.0-dev, libqmi-glib-dev, ${misc:Depends}
+Description: Qualcomm Sensor Core client library (development files)
+ Headers and pkg-config file of libssc.
+
+Package: libssc-tools
+Section: utils
+Architecture: any
+Depends: libssc2 (= ${binary:Version}), ${shlibs:Depends}, ${misc:Depends}
+Description: Qualcomm Sensor Core command line client
+ ssccli lists and reads the Qualcomm Sensor Core sensors.

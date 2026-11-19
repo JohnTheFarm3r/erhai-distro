@@ -1,0 +1,21 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# erhai-update IMAGE   (or - to read the image from stdin)
+# Stages a new system, the root.img of scripts/images.sh, in
+# /data/system/update. The next boot writes it over the system volume and
+# keeps the accounts and settings (initramfs/storage); /data is not touched.
+set -eu
+[ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
+[ $# = 1 ] || { echo "usage: erhai-update IMAGE|-" >&2; exit 2; }
+u=/data/system/update
+mkdir -p $u; rm -f $u/ready $u/root.img
+if [ "$1" = - ]; then cat > $u/root.img; else cp --sparse=always "$1" $u/root.img; fi
+room=$(blockdev --getsize64 "$(findmnt -no SOURCE /)")
+if [ "$(stat -c %s $u/root.img)" -gt "$room" ]; then
+	rm -f $u/root.img; echo "The image is larger than the system volume." >&2; exit 1
+fi
+if ! e2fsck -fn $u/root.img >/dev/null 2>&1; then
+	rm -f $u/root.img; echo "This is not a valid system image." >&2; exit 1
+fi
+sync; touch $u/ready; sync
+echo "The new system is installed on the next restart."

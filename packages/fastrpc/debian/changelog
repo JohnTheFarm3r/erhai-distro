@@ -1,0 +1,5 @@
+fastrpc (0.0.1+git20261113-0) resolute; urgency=medium
+
+  * Package the FastRPC client library for the OnePlus Pad 3.
+
+ -- erhai <erhai@localhost>  Thu, 19 Nov 2026 05:10:00 +0100

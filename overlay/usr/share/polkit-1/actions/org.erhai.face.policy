@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>erhai</vendor>
+  <!-- The helper checks the user's password itself, never the face, so
+       polkit lets the active local user start it. -->
+  <action id="org.erhai.face.store">
+    <description>Set up or remove face unlock</description>
+    <message>Authentication is required to change face unlock</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/erhai-face-store</annotate>
+  </action>
+</policyconfig>
