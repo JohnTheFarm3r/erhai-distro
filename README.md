@@ -40,6 +40,11 @@ it still runs Android (see Building).
 
 ## Installing
 
+Each release comes as two packages: `install` for a new installation and
+`update` for a tablet that already runs an earlier release (see System
+updates). Installing uses the `install` package, with `boot.img`,
+`init_boot.img`, `vendor_boot.img` and `userdata.img`.
+
 Installing formats `userdata`, which erases all your data. The
 bootloader must be unlocked. Only `userdata` and the boot partitions of the
 current slot are written; firmware, bootloader and vbmeta partitions are
@@ -97,24 +102,39 @@ There are two kinds of updates:
 - **Ubuntu updates**: packages from Ubuntu's own repositories update as
   usual with the Software Updater or APT.
 - **Releases of this build**: the hardware support (drivers, firmware, the
-  packages and settings in this repository) comes as a new system image,
-  `root.img`.
+  packages and settings in this repository) comes as a release of a new
+  system and boot images.
 
-A release replaces the system volume and leaves `/data` alone. Copy the new
-`root.img` to the tablet and run:
+A release replaces the system volume and leaves `/data` alone. Its `update`
+package holds the new system, `erhai-system-VERSION.zst`, and the boot
+images. The system file is not a partition image: never flash it with
+fastboot. On a tablet without this system, use the `install` package.
 
-```
-erhai-update root.img
-```
+1. On the tablet, stage the new system:
 
-The update is written on the next boot. Accounts, network, Bluetooth, face
+   ```
+   sudo erhai-update erhai-system-VERSION.zst
+   ```
+
+   It checks the file and shows the installed and the new version. A system
+   older than the installed one is refused unless `--allow-downgrade` is
+   given. The installed version is in `/usr/lib/erhai-release`.
+2. Turn the tablet off, start it in fastboot by holding volume down and
+   power, and flash the boot images of the release:
+
+   ```
+   fastboot flash boot        boot.img
+   fastboot flash init_boot   init_boot.img
+   fastboot flash vendor_boot vendor_boot.img
+   fastboot reboot
+   ```
+
+The new system is written on that boot. Accounts, network, Bluetooth, face
 unlock and the other settings listed in `initramfs/keep` are kept; more
 paths can be added in `/data/system/keep.local`. Apps from the App Center
 and Flatpak stay. Everything installed or updated with APT since the last
 release is part of the system volume and is replaced with it: programs
-installed with APT need to be installed again. A release with a new kernel
-also comes with new boot images, flashed with fastboot as in Installing;
-no data is lost.
+installed with APT need to be installed again. No data is lost.
 
 Releases are planned to move to a package repository of their own, so they
 install with APT next to Ubuntu's updates and nothing is replaced.
