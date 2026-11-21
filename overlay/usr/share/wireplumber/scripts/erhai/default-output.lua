@@ -4,7 +4,8 @@
 --    (Bluetooth, USB) become the default when they appear; when they go
 --    away the usual selection falls back to the speakers;
 --  * the raw speaker sink is never the default: the protected "Speakers"
---    sink is chosen in its place whenever it exists.
+--    sink is chosen in its place whenever it exists;
+--  * a microphone is the default input whenever there is one.
 
 log = Log.open_topic ("s-erhai-default-output")
 
@@ -65,6 +66,46 @@ SimpleEventHook {
         event:set_data ("selected-node", PROTECTED_SPEAKER)
         return
       end
+    end
+  end
+}:register ()
+
+-- The default input is a microphone whenever there is one. Output sinks are
+-- also input candidates (for recording what they play), and the protected
+-- "Speakers" sink has the higher priority, so without this the speakers'
+-- monitor would become the default input.
+SimpleEventHook {
+  name = "erhai/prefer-microphones",
+  after = { "default-nodes/find-best-default-node",
+            "default-nodes/find-selected-default-node",
+            "default-nodes/find-stored-default-node" },
+  before = "default-nodes/apply-default-node",
+  interests = {
+    EventInterest {
+      Constraint { "event.type", "=", "select-default-node" },
+      Constraint { "default-node.type", "=", "audio.source" },
+    },
+  },
+  execute = function (event)
+    local selected = event:get_data ("selected-node")
+    local available = event:get_data ("available-nodes")
+    available = available and available:parse () or {}
+    local best, best_prio
+    for _, props in ipairs (available) do
+      local class = props ["media.class"] or ""
+      if props ["node.name"] == selected and class:match ("^Audio/Source") then
+        return
+      end
+      if class:match ("^Audio/Source") then
+        local prio = tonumber (props ["priority.session"]) or 0
+        if not best_prio or prio > best_prio then
+          best, best_prio = props ["node.name"], prio
+        end
+      end
+    end
+    if best then
+      log:info ("input " .. tostring (selected) .. " is not a microphone, using " .. best)
+      event:set_data ("selected-node", best)
     end
   end
 }:register ()
