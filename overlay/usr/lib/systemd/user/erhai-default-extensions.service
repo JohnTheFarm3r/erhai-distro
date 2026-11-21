@@ -1,0 +1,10 @@
+[Unit]
+Description=Enable new built-in erhai shell extensions once
+Before=org.gnome.Shell@wayland.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/erhai-default-extensions
+
+[Install]
+WantedBy=graphical-session-pre.target

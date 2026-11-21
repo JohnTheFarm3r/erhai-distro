@@ -1,0 +1,38 @@
+#!/usr/bin/python3
+# SPDX-License-Identifier: GPL-2.0-only
+# Enable each built-in erhai shell extension once per user. A user that has
+# changed the extension list keeps it, which hides extensions added to the
+# system default later; this adds those once, and an extension the user
+# turns off afterwards stays off.
+import glob
+import os
+
+from gi.repository import Gio
+
+state_dir = os.path.join(os.environ.get('XDG_STATE_HOME') or
+                         os.path.expanduser('~/.local/state'), 'erhai')
+state = os.path.join(state_dir, 'extensions-enabled')
+
+try:
+    with open(state) as f:
+        done = set(f.read().split())
+except FileNotFoundError:
+    done = set()
+
+new = sorted(os.path.basename(d) for d in
+             glob.glob('/usr/share/gnome-shell/extensions/*@erhai')
+             if os.path.basename(d) not in done)
+if not new:
+    raise SystemExit(0)
+
+settings = Gio.Settings.new('org.gnome.shell')
+enabled = list(settings.get_strv('enabled-extensions'))
+disabled = set(settings.get_strv('disabled-extensions'))
+add = [u for u in new if u not in enabled and u not in disabled]
+if add:
+    settings.set_strv('enabled-extensions', enabled + add)
+    Gio.Settings.sync()
+
+os.makedirs(state_dir, exist_ok=True)
+with open(state, 'a') as f:
+    f.write(''.join(u + '\n' for u in new))
