@@ -38,6 +38,11 @@ if ls "$WORK"/debs/*.deb >/dev/null 2>&1; then
 	trap 'sudo umount "$S/dev" "$S/proc" 2>/dev/null || :' EXIT
 	sudo cp /etc/resolv.conf "$S/etc/resolv.conf.erhai"
 	ch sh -c 'mv /etc/resolv.conf /etc/resolv.conf.orig 2>/dev/null; cp /etc/resolv.conf.erhai /etc/resolv.conf'
+	# APT's update and dpkg hooks (update notifier, command-not-found,
+	# AppStream) only refresh caches the running system refreshes itself,
+	# and take minutes in the build. Skip them while building.
+	printf '#clear APT::Update::Post-Invoke-Success;\n#clear DPkg::Post-Invoke;\n' |
+		sudo tee "$S/etc/apt/apt.conf.d/zz-erhai-build" >/dev/null
 	ch apt-get -q update
 	# The rebuilt versions of installed packages, plus packages/*/install.
 	t=$(mktemp -d)
@@ -48,7 +53,8 @@ if ls "$WORK"/debs/*.deb >/dev/null 2>&1; then
 	ch sh -c 'rm -f /etc/resolv.conf /etc/resolv.conf.erhai; mv /etc/resolv.conf.orig /etc/resolv.conf 2>/dev/null || :'
 	ch apt-get -q clean
 	sudo umount "$S/dev" "$S/proc"; trap - EXIT
-	sudo rm -rf "$S/var/cache/erhai-debs" "$S/etc/apt/sources.list.d/erhai-local.list"
+	sudo rm -rf "$S/var/cache/erhai-debs" "$S/etc/apt/sources.list.d/erhai-local.list" \
+		"$S/etc/apt/apt.conf.d/zz-erhai-build"
 fi
 
 sudo cp -a --no-preserve=ownership "$ROOT"/overlay/. "$S"/
