@@ -1,0 +1,6 @@
+{
+  "uuid": "bypass-charging@erhai",
+  "name": "Bypass Charging",
+  "description": "Power the tablet directly from the charger without charging the battery, from the quick settings.",
+  "shell-version": ["50"]
+}

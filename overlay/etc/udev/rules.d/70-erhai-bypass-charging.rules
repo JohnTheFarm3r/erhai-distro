@@ -1,0 +1,4 @@
+# Bypass charging: let desktop users hold battery charging off so that a
+# connected charger powers the tablet directly. The charge thresholds stay
+# root only.
+SUBSYSTEM=="power_supply", KERNEL=="qcom-battmgr-bat", RUN+="/bin/chgrp plugdev /sys%p/charge_behaviour", RUN+="/bin/chmod 0664 /sys%p/charge_behaviour"

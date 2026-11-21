@@ -27,7 +27,7 @@ it still runs Android (see Building).
 | Speakers | all six, with thermal protection |
 | Microphones | internal microphones |
 | USB-C | USB 3, DisplayPort video and audio out, USB audio devices |
-| Battery and charging | battery level, USB PD and PPS fast charging |
+| Battery and charging | battery level, USB PD and PPS fast charging, bypass charging from the quick settings |
 | Storage | system and personal files on separate volumes, optional encryption |
 | Suspend | sleep and wake with the power button and the keyboard cover |
 | Sensors | screen rotation, automatic brightness, compass, gyroscope |

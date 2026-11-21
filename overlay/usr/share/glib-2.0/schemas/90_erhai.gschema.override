@@ -5,4 +5,4 @@ sleep-inactive-battery-timeout=300
 
 [org.gnome.shell]
 # The torch toggle in the quick settings.
-enabled-extensions=['torch@erhai']
+enabled-extensions=['torch@erhai', 'bypass-charging@erhai']
