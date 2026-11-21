@@ -140,6 +140,10 @@ If the tablet stops in fastboot after a reboot, check
 
 ## Building
 
+The hardware packages (`scripts/debs.sh`) are cross compiled for arm64 by
+the native toolchain, in an amd64 build root with arm64 as a foreign
+architecture (`scripts/ubuntu-buildenv.sh`).
+
 Requirements on the build machine: an aarch64 cross compiler, `mmdebstrap`,
 `lvm2`, `git`, QEMU 10 or newer registered as the arm64 binfmt handler (with
 the F flag), `dpkg-dev`, AOSP `mkbootimg` and `avbtool`, `img2simg`,
@@ -195,7 +199,9 @@ again.
 
 | Package | Change |
 |---|---|
-| mesa | Adreno 830 support |
+| mesa | newer release with Adreno 830 support (OpenGL ES, Vulkan, OpenCL) |
+| libdrm | newer release, needed by that Mesa |
+| wayland-protocols | newer release, needed by that Mesa |
 | fastrpc | library for running code on the DSPs |
 | libssc | client library for the Qualcomm sensor core |
 | iio-sensor-proxy | sensor core support |

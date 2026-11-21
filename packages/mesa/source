@@ -1,1 +1,1 @@
-debian http://deb.debian.org/debian/pool/main/m/mesa/mesa_26.1.6-1.dsc 062f1fe5cefd6d727bc13aea8733576d886c06297a9c6a3eadf75883128604c0
+git https://gitlab.freedesktop.org/mesa/mesa.git fec8830e9c94b1d67f3d8469467d5529fb2978cd 26.3.1

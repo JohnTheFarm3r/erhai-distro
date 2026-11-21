@@ -1,4 +1,78 @@
-# The Ubuntu 26.04 libdrm (2.4.131) has everything this Mesa uses. The
-# version is lowered in the control template too: the build regenerates
-# debian/control from it, and the package dependencies follow it.
-sed -i 's/libdrm-dev (>= 2.4.134-3~)/libdrm-dev (>= 2.4.131)/' debian/control debian/control.in
+# Cross build: the build tools run on the build machine, so they come from its
+# architecture (the Multi-Arch foreign ones need no mark); the arm64 Rust
+# standard library is what rustc links against.
+sed -i -E \
+	-e 's/^ (bindgen|cbindgen|llvm-spirv-[^ ,]+|python3|python3-mako|python3-pycparser|python3-yaml|rustc|rustfmt|librust-[a-z0-9-]+-dev)([ ,])/ \1:native\2/' \
+	-e 's/^ (rustc:native .*)$/ \1\n libstd-rust-dev [@RUSTICL_ARCHS@],/' \
+	debian/control.in
+sed -i -E \
+	-e 's/^ (bindgen|cbindgen|llvm-spirv-[^ ,]+|python3|python3-mako|python3-pycparser|python3-yaml|rustc|rustfmt|librust-[a-z0-9-]+-dev)([ ,])/ \1:native\2/' \
+	-e 's/^ (rustc:native .*\[([^]]*)\],)$/ \1\n libstd-rust-dev [\2],/' \
+	debian/control
+# The wrap file step only rewrites metadata with meson on the build machine;
+# the arm64 compiler flags exported for the build do not apply to it.
+sed -i 's|^\tdebian/get-wraps-from-cargo-registry.py|\tenv -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS debian/get-wraps-from-cargo-registry.py|' debian/rules
+# The virtual GPU protocol (used by the asahi and virtio drivers) is not
+# packaged in Ubuntu: it is built from its pinned release as a subproject.
+git init -q subprojects/venus-protocol-1.1.3
+git -C subprojects/venus-protocol-1.1.3 fetch -q --depth 1 https://gitlab.freedesktop.org/virgl/venus-protocol.git ca19b6358d7cc491bc3e4de76f04c6700876a8fa
+git -C subprojects/venus-protocol-1.1.3 checkout -q FETCH_HEAD
+rm -rf subprojects/venus-protocol-1.1.3/.git
+# The LLVM version this Mesa is built with.
+v=$(sed -n 's/^LLVM_VERSION = //p' debian/rules)
+# Build Mesa's build time shader compilers for the build machine, into
+# /usr/local/bin of the build root. The arm64 build runs them to precompile the
+# driver shaders (mesa_clc, vtn_bindgen2 and the asahi, panfrost and
+# imagination compilers). Also keeps the build machine's llvm-config next to
+# the arm64 LLVM as llvm-config-native: LLVM is built the same way for both
+# architectures, and llvm-config finds the libraries relative to itself.
+a=$(dpkg --print-architecture)
+# The arm64 development packages that cannot sit next to these are removed;
+# the build dependencies of the arm64 build bring them back.
+for d in llvm-$v-dev libclang-$v-dev libclang-cpp$v-dev libllvmspirvlib-$v-dev; do
+	dpkg -s $d:arm64 >/dev/null 2>&1 && apt-get remove -y -q $d:arm64 >/dev/null
+done
+apt-get install -y -q --no-install-recommends \
+	llvm-$v-dev:$a libclang-$v-dev:$a libclang1-$v:$a libclang-cpp$v-dev:$a libllvmspirvlib-$v-dev:$a \
+	libclc-$v-dev spirv-tools-dev:$a libexpat1-dev:$a zlib1g-dev:$a \
+	libelf-dev:$a gcc g++ pkgconf meson ninja-build glslang-tools bison flex \
+	python3-mako python3-yaml python3-pycparser >/dev/null
+install -m755 /usr/lib/llvm-$v/bin/llvm-config /usr/lib/llvm-$v/bin/llvm-config-native
+# libdrm for the build machine comes from Mesa's own pinned wrap: the
+# installed one is the arm64 erhai build.
+rm -rf build-tools
+PATH=/usr/lib/llvm-$v/bin:$PATH CC=gcc CXX=g++ CFLAGS= CXXFLAGS= LDFLAGS= CPPFLAGS= \
+meson setup build-tools . --force-fallback-for=libdrm -Dallow-fallback-for=libdrm --buildtype=release -Dprefix=/usr/local \
+	-Dplatforms= -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dgles1=disabled -Dgles2=disabled \
+	-Dopengl=false -Dgallium-drivers=asahi,panfrost -Dvulkan-drivers=asahi,panfrost,imagination \
+	-Dllvm=enabled -Dshared-llvm=enabled -Dmesa-clc=enabled -Dprecomp-compiler=enabled \
+	-Dinstall-mesa-clc=true -Dinstall-precomp-compiler=true -Dgallium-rusticl=false \
+	-Dvalgrind=disabled -Dlibunwind=disabled -Dzstd=disabled -Dexpat=enabled -Dbuild-tests=false >/dev/null
+t="src/compiler/clc/mesa_clc src/compiler/spirv/vtn_bindgen2 src/asahi/clc/asahi_clc
+	src/panfrost/clc/panfrost_compile src/imagination/pco/uscgen/pco_clc src/imagination/pdsc/pdsc_precomp"
+ninja -C build-tools $t
+for p in $t; do install -m755 build-tools/$p /usr/local/bin/; done
+# libclang-cpp is not multiarch: the arm64 build dependencies replace the
+# build machine's copy, so the compilers keep their own in /usr/local/lib.
+install -m644 "$(readlink -f /usr/lib/$(dpkg-architecture -qDEB_BUILD_MULTIARCH)/libclang-cpp.so.$v.1)" /usr/local/lib/libclang-cpp.so.$v.1
+ldconfig
+rm -rf build-tools subprojects/libdrm-* subprojects/packagecache
+# Cross file additions: Rust (OpenCL) targets arm64, bindgen parses the C
+# headers as arm64, LLVM is queried with llvm-config-native, and the shader
+# compilers built above are used.
+cat > debian/erhai-cross.ini <<INI
+[binaries]
+rust = ['rustc', '--target', 'aarch64-unknown-linux-gnu']
+llvm-config = '/usr/lib/llvm-$v/bin/llvm-config-native'
+
+[properties]
+bindgen_clang_arguments = ['--target=aarch64-linux-gnu']
+
+[project options]
+mesa-clc = 'system'
+precomp-compiler = 'system'
+INI
+sed -i 's|^\t$(buildflags) dh_auto_configure -- \\$|\t$(buildflags) dh_auto_configure -- --cross-file=$(CURDIR)/debian/erhai-cross.ini \\|' debian/rules
+# bindgen runs on the build machine, so it loads the build machine's libclang.
+m=$(dpkg-architecture -qDEB_BUILD_MULTIARCH)
+sed -i "/^LLVM_VERSION = /a export LIBCLANG_PATH := /usr/lib/$m" debian/rules

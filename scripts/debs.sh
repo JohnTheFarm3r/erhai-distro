@@ -1,7 +1,8 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0-only
-# Build the erhai hardware packages as Ubuntu packages into $WORK/debs, in the
-# arm64 build root of scripts/ubuntu-buildenv.sh. Each packages/<name>/ holds
+# Cross compile the erhai hardware packages for arm64 as Ubuntu packages into
+# $WORK/debs, in the build root of scripts/ubuntu-buildenv.sh. Each
+# packages/<name>/ holds
 #   source   "ubuntu SOURCE VERSION" (an Ubuntu 26.04 source package) or
 #            "debian DSC-URL DSC-SHA256" (a pinned Debian source package),
 #            "tarball URL SHA256 VERSION" or "git URL COMMIT VERSION" (an
@@ -22,7 +23,7 @@
 #   ERHAI_REBUILD=1  build the packages even when unchanged
 set -eu
 . "$(dirname "$0")/env.sh"
-B=$WORK/ubuntu-build
+B=$WORK/ubuntu-cross
 D=$WORK/debs
 REV=1
 [ $# -gt 0 ] || set -- $(cd "$ROOT/packages" && ls)
@@ -63,7 +64,15 @@ for m in proc dev dev/pts erhai-debs var/cache/ccache; do
 	esac
 	mounted="$m $mounted"
 done
-trap 'for m in $mounted; do sudo umount "$B/$m" 2>/dev/null || :; done' EXIT
+# No arm64 program may run during a build: arm64 emulation of the build
+# machine is switched off while packages build and restored afterwards.
+binfmt=/proc/sys/fs/binfmt_misc/qemu-aarch64
+restore=
+if [ -f $binfmt ] && grep -q enabled $binfmt; then
+	echo 0 | sudo tee $binfmt >/dev/null; restore=1
+fi
+trap 'for m in $mounted; do sudo umount "$B/$m" 2>/dev/null || :; done
+	[ -z "$restore" ] || echo 1 | sudo tee $binfmt >/dev/null' EXIT
 # Packages built earlier satisfy the build dependencies of later ones.
 echo "deb [trusted=yes] file:/erhai-debs ./" | sudo tee "$B/etc/apt/sources.list.d/erhai-debs.list" >/dev/null
 index() { (cd "$D" && dpkg-scanpackages -m . /dev/null > Packages 2>/dev/null); sudo chroot "$B" apt-get -q update >/dev/null; }
@@ -89,8 +98,8 @@ for n do
 			sudo curl -fsSL -o "$o" "$2"
 			echo "$3  $o" | sha256sum -c --quiet
 		else
-			t=$(mktemp -d); git clone -q "$2" "$t/src"
-			git -C "$t/src" archive --format=tar --prefix="$sp-$4/" "$3" | gzip -n | sudo tee "$o" >/dev/null
+			t=$(mktemp -d); git -C "$t" init -q; git -C "$t" fetch -q --depth 1 "$2" "$3"
+			git -C "$t" archive --format=tar --prefix="$sp-$4/" FETCH_HEAD | gzip -n | sudo tee "$o" >/dev/null
 			rm -rf "$t"
 		fi
 		sudo mkdir -p "$B$W/$sp-$4"
@@ -116,18 +125,21 @@ for n do
 	# dch renames the tree of a native package to the new version.
 	src=$(cd "$B$W" && ls -d */ | head -1); src=${src%/}
 	# A rebuilt dependency keeps its version, so APT would keep the copy
-	# already in the build root: reinstall the ones installed there.
+	# already in the build root: reinstall the ones installed there, all in
+	# one go so that packages depending on each other upgrade together.
+	re=
 	[ -f "$P/after" ] && for a in $(cat "$P/after"); do
 		while read -r f; do
-			sudo chroot "$B" dpkg -s "${f%%_*}" >/dev/null 2>&1 &&
-				sudo chroot "$B" dpkg -i "/erhai-debs/$f" >/dev/null
+			case $f in *_all.deb) pk=${f%%_*} ;; *) pk=${f%%_*}:arm64 ;; esac
+			sudo chroot "$B" dpkg -s "$pk" >/dev/null 2>&1 && re="$re /erhai-debs/$f"
 		done < "$D/$a.list"
 	done
-	sudo chroot "$B" sh -c "cd $W/$src && mk-build-deps -i -r -t 'apt-get -y -q --no-install-recommends' debian/control"
+	[ -z "$re" ] || sudo chroot "$B" dpkg -i $re >/dev/null
+	sudo chroot "$B" sh -c "cd $W/$src && apt-get build-dep -y -q --no-install-recommends -a arm64 -P cross,nocheck ./"
 	# The compiler cache lives outside HOME, which the package build points
 	# at a temporary directory.
 	sudo chroot "$B" sh -c "cd $W/$src && DEB_BUILD_OPTIONS='nocheck noddebs parallel=$(nproc)' \
-		CCACHE_DIR=/var/cache/ccache dpkg-buildpackage -b -uc -us" > "$WORK/debs-$n.log" 2>&1 || {
+		CCACHE_DIR=/var/cache/ccache dpkg-buildpackage -a arm64 -Pcross,nocheck -b -uc -us" > "$WORK/debs-$n.log" 2>&1 || {
 		echo "$n: build failed, see $WORK/debs-$n.log" >&2; exit 1; }
 	rm -f "$D/$n".list
 	for f in "$B$W"/*.deb; do cp "$f" "$D/"; echo "${f##*/}" >> "$D/$n.list"; done

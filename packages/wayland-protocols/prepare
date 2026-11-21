@@ -1,0 +1,4 @@
+# Only the protocol test suite needs libwayland 1.25; the protocols themselves
+# build with the Ubuntu 26.04 one (1.24) when the tests are off.
+sed -i 's/libwayland-dev (>= 1.25.0)/libwayland-dev (>= 1.24.0)/' debian/control
+printf '\noverride_dh_auto_configure:\n\tdh_auto_configure -- -Dtests=false\n' >> debian/rules

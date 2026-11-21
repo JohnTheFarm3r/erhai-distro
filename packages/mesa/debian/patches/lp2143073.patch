@@ -1,0 +1,33 @@
+From: Daniel van Vugt <daniel.van.vugt@canonical.com>
+Date: Tue, 29 Sep 2026 19:01:17 +0800
+Subject: gallium: Set a default max_texture_upload_memory_budget
+
+64MB seems like a sane amount of user memory to spend before upload
+throttling kicks in. That's also the maximum amount that drivers seem to be
+choosing, for those drivers that do already set
+`max_texture_upload_memory_budget`.
+
+Previously it had the default value of zero (including for Intel iris), so
+`util_throttle_memory_usage` was a no-op and allowed shared memory to grow
+without bounds in pathological `glTexSubImage2D` cases.
+
+Bug: https://gitlab.freedesktop.org/mesa/mesa/-/work_items/16408
+Bug-Ubuntu: https://bugs.launchpad.net/bugs/2143073
+Origin: https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/44789
+---
+ src/gallium/auxiliary/util/u_screen.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/src/gallium/auxiliary/util/u_screen.c b/src/gallium/auxiliary/util/u_screen.c
+index da9cdfc..6c8a698 100644
+--- a/src/gallium/auxiliary/util/u_screen.c
++++ b/src/gallium/auxiliary/util/u_screen.c
+@@ -173,6 +173,8 @@
+       VARYING_BIT_BOUNDING_BOX0 |
+       VARYING_BIT_BOUNDING_BOX1;
+ 
++   caps->max_texture_upload_memory_budget = 64 * 1024 * 1024;
++
+    caps->throttle = true;
+ 
+ #if defined(HAVE_LIBDRM) && (DETECT_OS_LINUX || DETECT_OS_BSD || DETECT_OS_MANAGARM)
