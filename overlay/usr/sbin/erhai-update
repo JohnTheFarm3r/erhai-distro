@@ -1,21 +1,46 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0-only
-# erhai-update IMAGE   (or - to read the image from stdin)
-# Stages a new system, the root.img of scripts/images.sh, in
-# /data/system/update. The next boot writes it over the system volume and
-# keeps the accounts and settings (initramfs/storage); /data is not touched.
+# erhai-update FILE   (or - to read an uncompressed image from stdin)
+# Stages a new system in /data/system/update: the erhai-system-*.zst of a
+# release, or the root.img of scripts/images.sh. The next boot writes it over
+# the system volume and keeps the accounts and settings (initramfs/storage);
+# /data is not touched. A system older than the running one is refused.
 set -eu
 [ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
-[ $# = 1 ] || { echo "usage: erhai-update IMAGE|-" >&2; exit 2; }
+force=
+[ "${1:-}" = --allow-downgrade ] && { force=1; shift; }
+[ $# = 1 ] || { echo "usage: erhai-update [--allow-downgrade] FILE|-" >&2; exit 2; }
 u=/data/system/update
 mkdir -p $u; rm -f $u/ready $u/root.img
-if [ "$1" = - ]; then cat > $u/root.img; else cp --sparse=always "$1" $u/root.img; fi
+trap 'rm -f $u/root.img' EXIT
+if [ "$1" = - ]; then
+	cat > $u/root.img
+elif [ "$(head -c 4 "$1" | od -An -tx1 | tr -d ' ')" = 28b52ffd ]; then
+	echo "Unpacking the system update..."
+	zstd -dq --sparse -o $u/root.img "$1"
+else
+	cp --sparse=always "$1" $u/root.img
+fi
 room=$(blockdev --getsize64 "$(findmnt -no SOURCE /)")
 if [ "$(stat -c %s $u/root.img)" -gt "$room" ]; then
-	rm -f $u/root.img; echo "The image is larger than the system volume." >&2; exit 1
+	echo "The image is larger than the system volume." >&2; exit 1
 fi
 if ! e2fsck -fn $u/root.img >/dev/null 2>&1; then
-	rm -f $u/root.img; echo "This is not a valid system image." >&2; exit 1
+	echo "This is not a valid system image." >&2; exit 1
 fi
-sync; touch $u/ready; sync
-echo "The new system is installed on the next restart."
+# Releases before 1.0.1 carry no version file.
+ver() { sed -n 's/^VERSION=//p'; }
+old=; [ -f /usr/lib/erhai-release ] && old=$(ver < /usr/lib/erhai-release)
+old=${old:-1.0}
+new=$(debugfs -R 'cat /usr/lib/erhai-release' $u/root.img 2>/dev/null | ver)
+if [ -z "$new" ]; then
+	echo "This is not a system image of this build." >&2; exit 1
+fi
+lower=$(printf '%s\n%s\n' "$old" "$new" | sort -V | head -n 1)
+if [ "$new" != "$old" ] && [ "$lower" = "$new" ] && [ -z "$force" ]; then
+	echo "This system ($new) is older than the installed one ($old)." >&2
+	echo "Use --allow-downgrade to install it anyway." >&2
+	exit 1
+fi
+sync; touch $u/ready; sync; trap - EXIT
+echo "Updating from $old to $new. The new system is installed on the next restart."
