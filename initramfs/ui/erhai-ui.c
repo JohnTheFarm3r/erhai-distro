@@ -210,7 +210,10 @@ static lv_obj_t *show_toggle(lv_obj_t *p, lv_obj_t **tas)
 
 /* Hardware keyboards (the keyboard cover or USB), US layout. */
 #define MAX_KBD 8
-static int kbd_fd[MAX_KBD], kbd_n, shift, caps;
+#define MAX_EVDEV 32
+static int kbd_fd[MAX_KBD], kbd_ev[MAX_KBD], kbd_n, shift, caps;
+/* Input devices already looked at, by event number. */
+static unsigned long seen;
 static const char *map_lo = "\0\0" "1234567890-=\b\t" "qwertyuiop[]\n\0" "asdfghjkl;'`\0\\" "zxcvbnm,./\0*\0 ";
 static const char *map_hi = "\0\0" "!@#$%^&*()_+\b\t" "QWERTYUIOP{}\n\0" "ASDFGHJKL:\"~\0|" "ZXCVBNM<>?\0*\0 ";
 
@@ -251,8 +254,9 @@ static void hw_key(int code)
 static void hw_poll(void)
 {
 	struct input_event ev;
-	for (int i = 0; i < kbd_n; i++)
-		while (read(kbd_fd[i], &ev, sizeof(ev)) == sizeof(ev)) {
+	for (int i = 0; i < kbd_n; i++) {
+		ssize_t r;
+		while ((r = read(kbd_fd[i], &ev, sizeof(ev))) == sizeof(ev)) {
 			if (ev.type != EV_KEY)
 				continue;
 			if (ev.code == KEY_LEFTSHIFT || ev.code == KEY_RIGHTSHIFT)
@@ -262,17 +266,32 @@ static void hw_poll(void)
 			else if (ev.value)
 				hw_key(ev.code);
 		}
+		if (r < 0 && errno == ENODEV) {
+			/* Gone (the cover was taken off): found again when it returns. */
+			close(kbd_fd[i]);
+			seen &= ~(1UL << kbd_ev[i]);
+			kbd_fd[i] = kbd_fd[kbd_n - 1];
+			kbd_ev[i] = kbd_ev[kbd_n - 1];
+			kbd_n--;
+			i--;
+		}
+	}
 }
 
-/* Touch screens and pens become pointers, keyboards are read by hw_poll. */
+/* Touch screens and pens become pointers, keyboards are read by hw_poll.
+ * Called again while the screens run: the keyboard cover and USB keyboards
+ * can appear after the screens start, or be attached later. */
 static void inputs(int32_t w, int32_t h)
 {
 	char path[64];
-	for (int i = 0; i < 32; i++) {
+	for (int i = 0; i < MAX_EVDEV; i++) {
+		if (seen & (1UL << i))
+			continue;
 		snprintf(path, sizeof(path), "/dev/input/event%d", i);
 		int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
 		if (fd < 0)
 			continue;
+		seen |= 1UL << i;
 		unsigned long ev[1] = {0}, key[KEY_CNT / (8 * sizeof(long)) + 1] = {0},
 			      abs[ABS_CNT / (8 * sizeof(long)) + 1] = {0}, prop[1] = {0};
 		ioctl(fd, EVIOCGBIT(0, sizeof(ev)), ev);
@@ -301,6 +320,7 @@ static void inputs(int32_t w, int32_t h)
 		} else if (test_bit(ev, EV_KEY) && test_bit(key, KEY_A) && kbd_n < MAX_KBD) {
 			/* Keys go only here, never to the console behind the screens. */
 			ioctl(fd, EVIOCGRAB, 1);
+			kbd_ev[kbd_n] = i;
 			kbd_fd[kbd_n++] = fd;
 		} else {
 			close(fd);
@@ -807,8 +827,13 @@ int main(int argc, char **argv)
 	clear();
 	inputs(w, h);
 
+	uint32_t rescan = lv_tick_get();
 	while (running) {
 		commands();
+		if (lv_tick_elaps(rescan) >= 500) {
+			inputs(w, h);
+			rescan = lv_tick_get();
+		}
 		hw_poll();
 		uint32_t next = lv_timer_handler();
 		if (next > 10)
