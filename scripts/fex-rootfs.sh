@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: GPL-2.0-only
 # Build $WORK/fex-rootfs/erhai-x86.sqsh, the x86-64 Ubuntu 24.04 system FEX
 # runs x86 programs in. It is the pinned FEX Ubuntu 24.04 image with the
-# Vulkan driver for the Adreno 830 (Mesa 26.1.6 with packages/mesa/*.patch)
-# built for x86-64 and i386. 64-bit programs reach the tablet's own Vulkan
+# Vulkan driver for the Adreno 830 (Mesa 26.3.1, the release the system's own
+# driver comes from) built for x86-64 and i386. 64-bit programs reach the tablet's own Vulkan
 # driver directly; 32-bit programs have no such path and use this one.
 # Needs unsquashfs and mksquashfs on an x86-64 build host.
 set -eu
@@ -13,12 +13,12 @@ OUTIMG=$F/erhai-x86.sqsh
 BASE=Ubuntu_24_04.sqsh
 BASE_URL=https://rootfs.fex-emu.gg/Ubuntu_24_04/2026-08-11/$BASE
 BASE_SHA=2854b06d3ff1b8f6e526135bfb6dd5b7b30ab3ab73e79ae933a3d9fed959a178
-MESA=mesa-26.1.6
+MESA=mesa-26.3.1
 MESA_URL=https://archive.mesa3d.org/$MESA.tar.xz
-MESA_SHA=5296b88a0f1e012e2cb9ada150a2bbadf728ca81e5a4fb2ab43c83a4d2158606
+MESA_SHA=4e4e438eac7b840a9383988cbb7c08dad8041da544b9319fc26d319fa7348961
 # One run at a time; a second one waits and then finds the result unchanged.
 exec 9>"$WORK/fex-rootfs.lock"; flock 9
-IN="$0 $(ls "$ROOT"/packages/mesa/*.patch | tr '\n' ' ')"
+IN="$0"
 unchanged fex-rootfs "$OUTIMG" $IN && exit 0
 rm -f "$WORK/fex-rootfs.stamp"
 mkdir -p "$F"
@@ -43,9 +43,6 @@ sudo cp /etc/resolv.conf "$B/etc/resolv.conf"
 trap 'sudo umount "$B/dev/pts" "$B/dev" "$B/proc" 2>/dev/null || :' EXIT
 sudo mkdir -p "$B/src"
 sudo tar -C "$B/src" -xf "$F/$MESA.tar.xz"
-for p in "$ROOT"/packages/mesa/*.patch; do
-	sudo patch -d "$B/src/$MESA" -p1 -s < "$p"
-done
 sudo chroot "$B" sh -ec "
 	export DEBIAN_FRONTEND=noninteractive
 	apt-get -q update
@@ -76,7 +73,9 @@ cpu = 'i686'
 endian = 'little'
 EOF
 	cd /src/$MESA
-	opts='-Dbuildtype=release -Db_ndebug=true -Dvulkan-drivers=freedreno -Dgallium-drivers=
+	# wayland-protocols in Ubuntu 24.04 is older than Mesa needs; it is only
+	# protocol descriptions, so take the one Mesa ships as a subproject.
+	opts='--force-fallback-for=wayland-protocols -Dbuildtype=release -Db_ndebug=true -Dvulkan-drivers=freedreno -Dgallium-drivers=
 		-Dfreedreno-kmds=msm -Dplatforms=x11,wayland -Dllvm=disabled -Dglx=disabled -Degl=disabled
 		-Dgbm=disabled -Dopengl=false -Dgles1=disabled -Dgles2=disabled -Dvideo-codecs=
 		-Dvulkan-layers= -Dtools= -Dbuild-tests=false -Dzstd=enabled'
