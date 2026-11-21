@@ -1,3 +1,11 @@
+libcamera (0.8.0-1) resolute; urgency=medium
+
+  * Add media devices that could not be opened when access to them is
+    granted later (a "change" event), so cameras appear once a session
+    gets access to them.
+
+ -- erhai <erhai@localhost>  Sat, 21 Nov 2026 04:58:00 +0100
+
 libcamera (0.8.0-0) resolute; urgency=medium
 
   * New upstream release.

@@ -1,0 +1,47 @@
+From: JohnTheFarm3r <104281500+JohnTheFarm3r@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 04:55:00 +0100
+Subject: [PATCH] libcamera: device_enumerator_udev: Add devices once access
+ is granted
+
+A media device that cannot be opened when it is added, for instance
+because the seat has not granted the session access to it yet, was
+recorded as seen and never tried again. When the active session of a
+seat changes, its devices get a "change" event once their permissions
+are updated. Forget devices that could not be opened and add them on a
+later "change" event, so cameras appear once access is granted.
+
+Signed-off-by: JohnTheFarm3r <104281500+JohnTheFarm3r@users.noreply.github.com>
+---
+--- a/src/libcamera/device_enumerator_udev.cpp
++++ b/src/libcamera/device_enumerator_udev.cpp
+@@ -92,8 +92,15 @@
+ 	if (!strcmp(subsystem, "media")) {
+ 		std::unique_ptr<MediaDevice> media =
+ 			createDevice(udev_device_get_devnode(dev));
+-		if (!media)
++		if (!media) {
++			/*
++			 * The device could not be opened, for instance because
++			 * access has not been granted yet. Forget it, so that a
++			 * later "change" event can add it.
++			 */
++			devices_.erase(devnum);
+ 			return -ENODEV;
++		}
+ 
+ 		DependencyMap deps;
+ 		int ret = populateMediaDevice(media.get(), &deps);
+@@ -367,7 +374,12 @@
+ 	LOG(DeviceEnumerator, Debug)
+ 		<< action << " device " << udev_device_get_devnode(dev);
+ 
+-	if (action == "add")
++	/*
++	 * Access to a device can be granted after it was added: when the
++	 * active session of a seat changes, its devices get a "change" event
++	 * with the new permissions. Devices already known are not added twice.
++	 */
++	if (action == "add" || action == "change")
+ 		addUdevDevice(dev);
+ 	else if (action == "remove")
+ 		removeUdevDevice(dev);
